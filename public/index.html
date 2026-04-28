@@ -719,9 +719,19 @@ async function viewInbox(app) {
   $('#ib-filter').onchange = (e) => { localStorage.setItem(LS.inboxFilter, e.target.value); viewInbox(app); };
   try {
     const items = await api('/api/inbox');
+    // Always drop assignee_changed where the new assignee isn't me.
+    // (Multica routes 'new assignee = me' through type=issue_assigned, so any
+    // assignee_changed in my inbox is by definition assigned to someone else
+    // — pure noise for me.) Applies in both Important and All views; if I
+    // ever care about other people's assignments I'll use the desktop UI.
+    const meId = state.me?.id;
+    const preFiltered = (items || []).filter(it => {
+      if (it.type !== 'assignee_changed') return true;
+      return it.details?.new_assignee_id === meId;
+    });
     const filtered = filter === 'important'
-      ? (items || []).filter(it => !INBOX_NOISE_TYPES.has(it.type))
-      : (items || []);
+      ? preFiltered.filter(it => !INBOX_NOISE_TYPES.has(it.type))
+      : preFiltered;
     // Dedupe by issue_id, keeping the newest item per issue. Items without
     // an issue_id (workspace-level notifications) pass through. Filter runs
     // BEFORE dedupe so 'Important' surfaces the latest important item even
