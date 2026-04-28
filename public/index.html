@@ -215,6 +215,10 @@ const state = {
   agentsById: {},
   membersById: {},
   inboxUnread: 0,
+  activeTasks: {},      // issue_id → { agent_id, agent_name, summary, started_at }
+  wsStatus: 'offline',  // 'offline' | 'connecting' | 'online'
+  viewSubs: [],         // event-bus unsubscribers for current view
+  ws: null,
 };
 
 // ===================== HTTP helpers =====================
@@ -238,6 +242,134 @@ async function api(path, opts = {}) {
     throw new Error(msg);
   }
   return body;
+}
+
+// ===================== Event bus + WebSocket =====================
+// Tiny pub/sub for view-level event handlers. Views push unsubscribers into
+// state.viewSubs so render() can drop them on navigation.
+const bus = (() => {
+  const handlers = {};
+  return {
+    on(type, fn) {
+      (handlers[type] ||= new Set()).add(fn);
+      return () => handlers[type]?.delete(fn);
+    },
+    emit(type, payload) {
+      handlers[type]?.forEach(fn => { try { fn(payload); } catch (e) { console.warn(e); } });
+    },
+  };
+})();
+
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectWS();
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+  }, reconnectDelay);
+}
+function connectWS() {
+  if (!state.workspace) return;
+  const pat = localStorage.getItem(LS.pat);
+  if (!pat) return;
+  if (state.ws && state.ws.readyState <= 1) return; // already connecting/open
+  const wsUrl = apiBase().replace(/^http/, 'ws') + `/ws?workspace_slug=${encodeURIComponent(state.workspace.slug)}`;
+  state.wsStatus = 'connecting';
+  updateConnIndicator();
+  let ws;
+  try { ws = new WebSocket(wsUrl); }
+  catch (e) { state.wsStatus = 'offline'; updateConnIndicator(); scheduleReconnect(); return; }
+  state.ws = ws;
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'auth', payload: { token: pat } }));
+  };
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.error) { console.warn('ws error:', msg.error); ws.close(); return; }
+    if (msg.type === 'auth_ack') {
+      state.wsStatus = 'online';
+      reconnectDelay = 1000;
+      updateConnIndicator();
+      return;
+    }
+    if (msg.type) handleEvent(msg.type, msg.payload);
+  };
+  ws.onclose = () => {
+    state.ws = null;
+    state.wsStatus = 'offline';
+    updateConnIndicator();
+    scheduleReconnect();
+  };
+  ws.onerror = () => { /* close fires too */ };
+}
+
+function handleEvent(type, payload) {
+  // 1) Maintain global activeTasks state (drives badges + banners)
+  switch (type) {
+    case 'task:dispatch': {
+      const iid = payload?.issue_id || payload?.task?.issue_id;
+      const aid = payload?.agent_id || payload?.task?.agent_id;
+      if (iid) {
+        state.activeTasks[iid] = {
+          agent_id: aid,
+          agent_name: state.agentsById[aid]?.name || 'agent',
+          summary: payload?.title ? `started: ${payload.title}` : 'starting…',
+          started_at: payload?.dispatched_at || payload?.task?.dispatched_at || new Date().toISOString(),
+        };
+        bus.emit('activeTasks:changed', { issue_id: iid });
+      }
+      break;
+    }
+    case 'task:progress': {
+      const iid = payload?.issue_id || payload?.task?.issue_id;
+      if (iid) {
+        const cur = state.activeTasks[iid] || {};
+        state.activeTasks[iid] = {
+          agent_id: cur.agent_id || payload?.agent_id,
+          agent_name: cur.agent_name || state.agentsById[payload?.agent_id]?.name || 'agent',
+          summary: payload?.summary || cur.summary || '…',
+          started_at: cur.started_at || new Date().toISOString(),
+        };
+        bus.emit('activeTasks:changed', { issue_id: iid });
+      }
+      break;
+    }
+    case 'task:completed':
+    case 'task:failed':
+    case 'task:cancelled': {
+      const iid = payload?.issue_id || payload?.task?.issue_id;
+      if (iid && state.activeTasks[iid]) {
+        delete state.activeTasks[iid];
+        bus.emit('activeTasks:changed', { issue_id: iid });
+      }
+      break;
+    }
+    case 'inbox:new':
+    case 'inbox:read':
+    case 'inbox:archived':
+    case 'inbox:batch-read':
+    case 'inbox:batch-archived':
+      refreshInboxBadge().then(updateConnIndicator);
+      break;
+  }
+  // 2) Forward to view-level subscribers
+  bus.emit(type, payload);
+}
+
+function updateConnIndicator() {
+  const el = document.getElementById('conn-indicator');
+  if (!el) return;
+  const map = {
+    online: { dot: '🟢', text: 'live', color: 'var(--success)' },
+    connecting: { dot: '🟡', text: '…', color: 'var(--warning)' },
+    offline: { dot: '🔴', text: 'offline', color: 'var(--danger)' },
+  };
+  const m = map[state.wsStatus] || map.offline;
+  el.innerHTML = `<span style="color:${m.color};font-size:10px;font-weight:600;">${m.dot} ${m.text}</span>`;
+  el.title = `realtime: ${state.wsStatus}`;
 }
 
 // ===================== Helpers =====================
@@ -340,6 +472,13 @@ async function render() {
   }
   refreshInboxBadge().catch(() => {});
 
+  // Open WS once we have workspace + PAT; persists across view changes.
+  connectWS();
+
+  // Drop subscribers from the previous view before mounting the new one.
+  state.viewSubs.forEach(unsub => { try { unsub(); } catch {} });
+  state.viewSubs = [];
+
   const hash = location.hash || '#/inbox';
   for (const r of routes) {
     const m = hash.match(r.match);
@@ -353,14 +492,23 @@ async function render() {
 }
 
 window.addEventListener('hashchange', render);
-window.addEventListener('focus', () => { refreshInboxBadge().then(() => updateBottomNav()); });
+window.addEventListener('focus', () => {
+  refreshInboxBadge().then(() => updateBottomNav());
+  // Reconnect WS if it dropped while the tab was backgrounded
+  if (!state.ws || state.ws.readyState > 1) connectWS();
+});
+// Pause aggressive polling when the page is hidden; reconnect WS on return.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && (!state.ws || state.ws.readyState > 1)) connectWS();
+});
 
 function chrome(title, opts = {}) {
   const back = opts.back ? `<button class="back" onclick="history.back()">←</button>` : '';
   const right = opts.right || '';
   const tabs = opts.hideNav ? '' : bottomNav();
+  const conn = `<span id="conn-indicator" style="margin-right:6px;"></span>`;
   return {
-    header: `<header class="top">${back}<h1>${escapeHtml(title)}</h1>${right}</header>`,
+    header: `<header class="top">${back}<h1>${escapeHtml(title)}</h1>${conn}${right}</header>`,
     nav: tabs,
   };
 }
@@ -472,6 +620,10 @@ async function viewInbox(app) {
   } catch (e) {
     $('#list').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
   }
+  // Live: refresh the inbox list when any inbox event lands. Cheap re-fetch.
+  const refresh = () => viewInbox(app);
+  ['inbox:new', 'inbox:read', 'inbox:archived', 'inbox:batch-read', 'inbox:batch-archived']
+    .forEach(t => state.viewSubs.push(bus.on(t, refresh)));
 }
 
 function renderInboxItem(it) {
@@ -496,6 +648,29 @@ function renderInboxItem(it) {
 }
 
 // ===================== Issues list =====================
+// Re-render only the cards in the current list, preserving scroll position.
+// Called when activeTasks changes so 🤖 badges flip without a full re-fetch.
+function refreshIssuesList() {
+  const list = document.getElementById('list');
+  if (!list) return;
+  $$('#list .card').forEach(el => {
+    const id = el.dataset.id;
+    if (!id) return;
+    const active = state.activeTasks[id];
+    let badge = el.querySelector('.row1 span[title]');
+    if (active && !badge) {
+      const titleEl = el.querySelector('.row1');
+      titleEl.insertAdjacentHTML('beforeend', `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">🤖</span>`);
+      el.style.borderColor = 'var(--accent)';
+    } else if (active && badge) {
+      badge.title = active.agent_name + ': ' + active.summary;
+    } else if (!active && badge) {
+      badge.remove();
+      el.style.borderColor = '';
+    }
+  });
+}
+
 async function viewIssues(app) {
   const filter = sessionStorage.getItem('mm.issuesFilter') || 'open';
   const c = chrome('Issues', {
@@ -529,15 +704,21 @@ async function viewIssues(app) {
   } catch (e) {
     $('#list').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
   }
+  // Live: re-render badges when active tasks change; re-fetch list on issue create/update.
+  state.viewSubs.push(bus.on('activeTasks:changed', refreshIssuesList));
+  state.viewSubs.push(bus.on('issue:created', () => viewIssues(app)));
+  state.viewSubs.push(bus.on('issue:updated', () => viewIssues(app)));
 }
 
 function renderIssueCard(i) {
   const assigneeName = assigneeLabel(i.assignee_type, i.assignee_id);
+  const active = state.activeTasks[i.id];
   return `
-    <div class="card" data-id="${i.id}" style="cursor:pointer;">
+    <div class="card" data-id="${i.id}" style="cursor:pointer;${active ? 'border-color:var(--accent);' : ''}">
       <div class="row1">
         <div class="ident">${escapeHtml(i.identifier)}</div>
         <div class="title">${escapeHtml(i.title)}</div>
+        ${active ? `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">🤖</span>` : ''}
       </div>
       <div class="meta">
         <span class="pill status-${i.status}">${prettyStatus(i.status)}</span>
@@ -569,16 +750,111 @@ async function viewIssue(app, issueId) {
   const c = chrome('', { back: true });
   app.innerHTML = `${c.header}<main><div id="detail"><div class="loading">Loading…</div></div></main>${c.nav}`;
   try {
-    const [issue, comments] = await Promise.all([
+    const [issue, comments, activeTask] = await Promise.all([
       api(`/api/issues/${issueId}`),
       api(`/api/issues/${issueId}/comments`),
+      api(`/api/issues/${issueId}/active-task`).catch(() => null),
     ]);
+    // Backfill active-task state from the per-issue endpoint so the banner
+    // shows immediately on cold open (WS only fires on the next progress tick).
+    if (activeTask && activeTask.id && (activeTask.status === 'pending' || activeTask.status === 'running' || activeTask.status === 'in_progress' || activeTask.status === 'queued')) {
+      state.activeTasks[issueId] = {
+        agent_id: activeTask.agent_id,
+        agent_name: activeTask.agent?.name || state.agentsById[activeTask.agent_id]?.name || 'agent',
+        summary: activeTask.status === 'pending' || activeTask.status === 'queued' ? 'queued…' : 'running…',
+        started_at: activeTask.started_at || activeTask.dispatched_at || activeTask.created_at,
+      };
+    } else {
+      delete state.activeTasks[issueId];
+    }
     document.querySelector('header.top h1').textContent = issue.identifier;
     $('#detail').innerHTML = renderIssueDetail(issue, comments || []);
     wireIssueDetail(app, issue, comments || []);
+    wireIssueLive(app, issue);
   } catch (e) {
     $('#detail').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
   }
+}
+
+// Renders the active-task banner. Updated in place when activeTasks changes.
+function renderActiveBanner(issueId) {
+  const a = state.activeTasks[issueId];
+  if (!a) return '';
+  const elapsed = a.started_at ? fmtDate(a.started_at) : '';
+  return `
+    <div style="background:var(--surface-2);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin-bottom:12px;display:flex;gap:8px;align-items:center;">
+      <span style="font-size:18px;line-height:1;">🤖</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:13px;">${escapeHtml(a.agent_name || 'agent')} working${elapsed ? ` · ${escapeHtml(elapsed)}` : ''}</div>
+        <div style="font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(a.summary || '…')}</div>
+      </div>
+    </div>`;
+}
+
+// Wires up live event handlers for the issue detail view. Each subscription
+// pushes its unsubscriber into state.viewSubs so render() can clean them up
+// when the user navigates away.
+function wireIssueLive(app, issue) {
+  const issueId = issue.id;
+
+  // Active-agent banner — live update from task:* events
+  const updateBanner = () => {
+    const slot = document.getElementById('active-banner');
+    if (slot) slot.innerHTML = renderActiveBanner(issueId);
+  };
+  state.viewSubs.push(bus.on('activeTasks:changed', (p) => {
+    if (!p || p.issue_id === issueId) updateBanner();
+  }));
+
+  // Comments — re-fetch on any comment event for this issue
+  const refreshComments = async (payload) => {
+    const cIssueId = payload?.issue_id || payload?.comment?.issue_id;
+    if (cIssueId && cIssueId !== issueId) return;
+    try {
+      const fresh = await api(`/api/issues/${issueId}/comments`);
+      const el = document.getElementById('comments');
+      if (el) el.innerHTML = (fresh || []).map(renderCommentEl).join('') || '<div class="empty" style="padding:16px;">No comments yet.</div>';
+      const heading = document.querySelector('#detail h3');
+      if (heading) heading.textContent = `Comments (${(fresh || []).length})`;
+    } catch (e) { /* ignore */ }
+  };
+  ['comment:created', 'comment:updated', 'comment:deleted', 'reaction:added', 'reaction:removed']
+    .forEach(t => state.viewSubs.push(bus.on(t, refreshComments)));
+
+  // Issue updates (status/assignee changed by another client)
+  state.viewSubs.push(bus.on('issue:updated', async (payload) => {
+    const updatedId = payload?.issue?.id || payload?.id;
+    if (updatedId && updatedId !== issueId) return;
+    try {
+      const fresh = await api(`/api/issues/${issueId}`);
+      // Update local issue object in-place + reflect in selects/banner
+      Object.assign(issue, fresh);
+      const statusSel = document.getElementById('status');
+      if (statusSel && statusSel.value !== fresh.status) statusSel.value = fresh.status;
+      const assigneeSel = document.getElementById('assignee');
+      if (assigneeSel) {
+        const v = fresh.assignee_type && fresh.assignee_id ? `${fresh.assignee_type}:${fresh.assignee_id}` : '';
+        if (assigneeSel.value !== v) assigneeSel.value = v;
+      }
+      // approve-bar may need refresh if reactions changed
+      const bar = document.getElementById('approve-bar');
+      if (bar) { bar.innerHTML = renderApprovalBar(fresh); wireApproveBar(fresh); }
+    } catch (e) { /* ignore */ }
+  }));
+
+  // Issue reactions (separate event channel)
+  ['issue_reaction:added', 'issue_reaction:removed'].forEach(t =>
+    state.viewSubs.push(bus.on(t, async (payload) => {
+      const rIssueId = payload?.issue_id || payload?.reaction?.issue_id;
+      if (rIssueId && rIssueId !== issueId) return;
+      try {
+        const fresh = await api(`/api/issues/${issueId}`);
+        Object.assign(issue, fresh);
+        const bar = document.getElementById('approve-bar');
+        if (bar) { bar.innerHTML = renderApprovalBar(fresh); wireApproveBar(fresh); }
+      } catch (e) { /* ignore */ }
+    }))
+  );
 }
 
 function renderIssueDetail(i, comments) {
@@ -591,6 +867,7 @@ function renderIssueDetail(i, comments) {
       </select>
       <select id="assignee">${assigneeOptions}</select>
     </div>
+    <div id="active-banner">${renderActiveBanner(i.id)}</div>
     <div id="approve-bar">${renderApprovalBar(i)}</div>
     ${i.description ? `<div class="comment"><div class="body">${renderCommentBody(i.description)}</div></div>` : ''}
 
