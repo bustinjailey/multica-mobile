@@ -254,6 +254,8 @@
 const LS = {
   pat: 'mm.pat',
   ws: 'mm.workspace',     // {id, slug, name, issuePrefix}
+  wsList: 'mm.workspaces',// cached list of every workspace the PAT can see
+  scope: 'mm.scope',      // workspace.id | 'all' — which lens issues/board use
   base: 'mm.api_base',    // override for non-default origin
   pushOn: 'mm.push.on',   // '1' if push subscription is intended (re-subscribe on each load)
   inboxFilter: 'mm.inbox.filter', // 'important' | 'all' (default: important)
@@ -288,8 +290,9 @@ const apiBase = () => localStorage.getItem(LS.base) || (location.origin || 'http
 
 const state = {
   me: null,
-  workspaces: [],
+  workspaces: JSON.parse(localStorage.getItem(LS.wsList) || '[]'),
   workspace: JSON.parse(localStorage.getItem(LS.ws) || 'null'),
+  scope: localStorage.getItem(LS.scope) || null, // workspace.id or 'all'
   agents: [],     // for current workspace
   members: [],    // for current workspace
   agentsById: {},
@@ -303,17 +306,18 @@ const state = {
 };
 
 // ===================== HTTP helpers =====================
-function authHeaders(extra = {}) {
+function authHeaders(extra = {}, workspaceSlug) {
   const pat = localStorage.getItem(LS.pat);
   const h = { 'Accept': 'application/json', ...extra };
   if (pat) h['Authorization'] = `Bearer ${pat}`;
-  if (state.workspace?.slug) h['X-Workspace-Slug'] = state.workspace.slug;
+  const slug = workspaceSlug || state.workspace?.slug;
+  if (slug) h['X-Workspace-Slug'] = slug;
   return h;
 }
 async function api(path, opts = {}) {
   const r = await fetch(apiBase() + path, {
     ...opts,
-    headers: authHeaders(opts.body ? { 'Content-Type': 'application/json', ...(opts.headers||{}) } : (opts.headers||{})),
+    headers: authHeaders(opts.body ? { 'Content-Type': 'application/json', ...(opts.headers||{}) } : (opts.headers||{}), opts.workspaceSlug),
   });
   if (r.status === 204) return null;
   const ct = r.headers.get('content-type') || '';
@@ -610,11 +614,19 @@ async function render() {
   const pat = localStorage.getItem(LS.pat);
   if (!pat) return setupView(app);
   if (!state.workspace) return workspacePicker(app);
+  if (!state.scope) {
+    state.scope = state.workspace.id;
+    localStorage.setItem(LS.scope, state.scope);
+  }
 
   // Lazy-load shared data on first render
   if (state.agents.length === 0) {
     try { await loadWorkspaceData(); } catch (e) { console.warn(e); }
   }
+  // Refresh the workspace list in the background so the cross-workspace
+  // selector always reflects what the PAT can see, even if the user switched
+  // back and forth without revisiting the picker.
+  refreshWorkspaceList().catch(() => {});
   refreshInboxBadge().catch(() => {});
 
   // Open WS once we have workspace + PAT; persists across view changes.
@@ -711,11 +723,79 @@ function setupView(app) {
   };
 }
 
+async function refreshWorkspaceList() {
+  try {
+    const wss = await api('/api/workspaces');
+    if (Array.isArray(wss)) {
+      state.workspaces = wss;
+      localStorage.setItem(LS.wsList, JSON.stringify(wss));
+    }
+  } catch (e) { /* stale cache is fine */ }
+}
+
+// Resolve the active scope into either a single workspace (for inbox / single
+// issue views) or the literal string 'all' (for cross-workspace lenses).
+function activeScope() {
+  if (state.scope === 'all') return 'all';
+  return state.workspaces.find(w => w.id === state.scope)
+    || state.workspace
+    || null;
+}
+
+// Fetch issues honoring the active scope. Single workspace = the existing
+// path; 'all' = concurrent fan-out, results tagged with `_workspace` so the
+// renderer can show which workspace each issue lives in.
+async function fetchIssuesScoped(filter) {
+  const params = buildIssueQuery(filter);
+  const scope = activeScope();
+  if (scope === 'all') {
+    const list = state.workspaces.length ? state.workspaces : (state.workspace ? [state.workspace] : []);
+    const all = await Promise.all(list.map(async ws => {
+      try {
+        const slug = ws.slug;
+        const r = await api(`/api/issues?${params}`, { workspaceSlug: slug });
+        const arr = Array.isArray(r) ? r : (r.issues || []);
+        return arr.map(i => ({ ...i, _workspace: { id: ws.id, slug: ws.slug, name: ws.name } }));
+      } catch { return []; }
+    }));
+    return all.flat();
+  }
+  const slug = scope?.slug || state.workspace?.slug;
+  const r = await api(`/api/issues?${params}`, { workspaceSlug: slug });
+  const arr = Array.isArray(r) ? r : (r.issues || []);
+  // Tag with the active workspace too so the click handler has uniform info.
+  const ws = scope || state.workspace;
+  return ws ? arr.map(i => ({ ...i, _workspace: { id: ws.id, slug: ws.slug, name: ws.name } })) : arr;
+}
+
+// Click handler for issue cards. In cross-workspace mode we may be looking at
+// an issue that lives in a workspace other than the currently-selected one;
+// switch state.workspace to that workspace synchronously, then navigate.
+function openIssueCard(issue) {
+  const w = issue._workspace;
+  if (w && w.id && state.workspace?.id !== w.id) {
+    const full = state.workspaces.find(x => x.id === w.id) || w;
+    state.workspace = {
+      id: full.id,
+      slug: full.slug,
+      name: full.name,
+      issuePrefix: full.issue_prefix || full.issuePrefix || '',
+    };
+    localStorage.setItem(LS.ws, JSON.stringify(state.workspace));
+    // Bust caches that are workspace-specific (agents/members/active tasks).
+    state.agents = []; state.members = []; state.agentsById = {}; state.membersById = {};
+    state.activeTasks = {}; state.taskMessages = {};
+    if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
+  }
+  navigate(`#/issue/${issue.id}`);
+}
+
 async function workspacePicker(app) {
   app.innerHTML = `<div class="setup"><h1>Choose workspace</h1><div id="ws"></div></div>`;
   try {
     const wss = await api('/api/workspaces');
     state.workspaces = wss;
+    if (Array.isArray(wss)) localStorage.setItem(LS.wsList, JSON.stringify(wss));
     const html = wss.map(w => `
       <button class="card" data-id="${w.id}" data-slug="${w.slug}" data-name="${escapeHtml(w.name)}" data-prefix="${w.issue_prefix||''}" style="text-align:left;width:100%;margin-bottom:8px;background:var(--surface);">
         <div class="title">${escapeHtml(w.name)}</div>
@@ -971,6 +1051,39 @@ function refreshIssuesList() {
   });
 }
 
+function workspaceScopeOptions() {
+  const cur = state.scope || state.workspace?.id || '';
+  const items = state.workspaces.length
+    ? state.workspaces
+    : (state.workspace ? [state.workspace] : []);
+  const opts = [
+    `<option value="all" ${cur === 'all' ? 'selected' : ''}>🌐 All workspaces</option>`,
+    ...items.map(w => `<option value="${w.id}" ${cur === w.id ? 'selected' : ''}>${escapeHtml(w.name)}</option>`),
+  ];
+  return opts.join('');
+}
+
+function applyScopeChange(newScope) {
+  if (newScope === 'all') {
+    state.scope = 'all';
+  } else {
+    const ws = state.workspaces.find(w => w.id === newScope);
+    if (!ws) return;
+    state.scope = ws.id;
+    state.workspace = {
+      id: ws.id,
+      slug: ws.slug,
+      name: ws.name,
+      issuePrefix: ws.issue_prefix || ws.issuePrefix || '',
+    };
+    localStorage.setItem(LS.ws, JSON.stringify(state.workspace));
+    state.agents = []; state.members = []; state.agentsById = {}; state.membersById = {};
+    state.activeTasks = {}; state.taskMessages = {};
+    if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
+  }
+  localStorage.setItem(LS.scope, state.scope);
+}
+
 async function viewIssues(app) {
   const filter = readFilter();
   const selectStyle = 'width:auto;min-height:36px;padding:6px 8px;font-size:13px;';
@@ -980,9 +1093,11 @@ async function viewIssues(app) {
     `<option value="${v}" ${filter.status===v?'selected':''}>${l}</option>`).join('');
   const sortOptions = SORT_OPTIONS.map(([v, l]) =>
     `<option value="${v}" ${filter.sort===v?'selected':''}>${l}</option>`).join('');
+  const wsOptions = workspaceScopeOptions();
   const c = chrome('Issues');
   app.innerHTML = `${c.header}
     <div style="position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;">
+      <select id="f-ws" style="${selectStyle}flex:1 1 100%;min-width:100px;" title="Workspace">${wsOptions}</select>
       <select id="f-scope" style="${selectStyle}flex:1;min-width:80px;">${scopeOptions}</select>
       <select id="f-status" style="${selectStyle}flex:1;min-width:100px;">${statusOptions}</select>
       <select id="f-sort" style="${selectStyle}flex:1;min-width:90px;" title="Sort">${sortOptions}</select>
@@ -992,19 +1107,19 @@ async function viewIssues(app) {
     writeFilter({ scope: $('#f-scope').value, status: $('#f-status').value, sort: $('#f-sort').value });
     viewIssues(app);
   };
+  $('#f-ws').onchange = (e) => { applyScopeChange(e.target.value); viewIssues(app); };
   $('#f-scope').onchange = apply;
   $('#f-status').onchange = apply;
   $('#f-sort').onchange = apply;
   try {
-    const params = buildIssueQuery(filter);
-    const issues = await api(`/api/issues?${params}`);
-    const raw = Array.isArray(issues) ? issues : (issues.issues || []);
+    const raw = await fetchIssuesScoped(filter);
     const filtered = applyClientFilter(raw, filter);
     const sorted = sortIssues(filtered, filter.sort);
     if (!sorted.length) { $('#list').innerHTML = `<div class="empty">No issues.</div>`; return; }
     $('#list').innerHTML = sorted.map(renderIssueCard).join('');
     $$('#list .card').forEach(el => {
-      el.onclick = () => navigate(`#/issue/${el.dataset.id}`);
+      const issue = sorted.find(i => i.id === el.dataset.id);
+      if (issue) el.onclick = () => openIssueCard(issue);
     });
   } catch (e) {
     $('#list').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
@@ -1025,24 +1140,25 @@ async function viewBoard(app) {
   const selectStyle = 'width:auto;min-height:36px;padding:6px 8px;font-size:13px;';
   const scopeOptions = SCOPE_OPTIONS.map(([v, l]) =>
     `<option value="${v}" ${filter.scope===v?'selected':''}>${l}</option>`).join('');
+  const wsOptions = workspaceScopeOptions();
   const c = chrome('Board');
   app.innerHTML = `${c.header}
-    <div style="position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:6px;">
+    <div style="position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;">
+      <select id="b-ws" style="${selectStyle}flex:1 1 100%;min-width:100px;" title="Workspace">${wsOptions}</select>
       <select id="b-scope" style="${selectStyle}flex:1;">${scopeOptions}</select>
     </div>
     <main style="padding:0;">
-      <div id="board" style="display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:12px;height:calc(100vh - 160px);">
+      <div id="board" style="display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:12px;height:calc(100vh - 200px);">
         <div class="loading">Loading…</div>
       </div>
     </main>${c.nav}`;
+  $('#b-ws').onchange = (e) => { applyScopeChange(e.target.value); viewBoard(app); };
   $('#b-scope').onchange = () => {
     writeFilter({ ...filter, scope: $('#b-scope').value });
     viewBoard(app);
   };
   try {
-    const params = buildIssueQuery({ ...filter, status: 'open' });
-    const issues = await api(`/api/issues?${params}`);
-    const raw = Array.isArray(issues) ? issues : (issues.issues || []);
+    const raw = await fetchIssuesScoped({ ...filter, status: 'open' });
     const open = raw.filter(i => NON_TERMINAL_STATUSES.has(i.status));
     const byLane = Object.fromEntries(BOARD_LANES.map(s => [s, []]));
     for (const i of open) if (byLane[i.status]) byLane[i.status].push(i);
@@ -1059,8 +1175,10 @@ async function viewBoard(app) {
             : '<div class="empty" style="padding:8px;font-size:12px;">Empty</div>'}
         </div>
       </section>`).join('');
+    const flat = open;
     $$('#board .card').forEach(el => {
-      el.onclick = () => navigate(`#/issue/${el.dataset.id}`);
+      const issue = flat.find(i => i.id === el.dataset.id);
+      if (issue) el.onclick = () => openIssueCard(issue);
     });
   } catch (e) {
     $('#board').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
@@ -1073,6 +1191,10 @@ async function viewBoard(app) {
 function renderIssueCard(i) {
   const assigneeName = assigneeLabel(i.assignee_type, i.assignee_id);
   const active = state.activeTasks[i.id];
+  // Show the workspace name only when the user is browsing across workspaces
+  // and this issue lives somewhere other than the currently-selected one —
+  // otherwise the label is just visual noise.
+  const showWs = state.scope === 'all' && i._workspace && i._workspace.id !== state.workspace?.id;
   return `
     <div class="card" data-id="${i.id}" style="cursor:pointer;${active ? 'border-color:var(--accent);' : ''}">
       <div class="row1">
@@ -1084,6 +1206,7 @@ function renderIssueCard(i) {
         <span class="pill status-${i.status}">${prettyStatus(i.status)}</span>
         ${i.priority && i.priority !== 'none' ? `<span class="pill priority-${i.priority}">${i.priority}</span>` : ''}
         ${assigneeName ? `<span>👤 ${escapeHtml(assigneeName)}</span>` : ''}
+        ${showWs ? `<span class="pill" style="background:var(--surface-2);" title="Workspace">🌐 ${escapeHtml(i._workspace.name)}</span>` : ''}
         <span style="margin-left:auto;">${fmtDate(i.updated_at)}</span>
       </div>
     </div>`;
