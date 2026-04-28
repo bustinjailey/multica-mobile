@@ -1007,6 +1007,40 @@ async function resolveIssueIdByKey(key) {
   return null;
 }
 
+// Terminal task statuses — anything else returned from /active-task is treated
+// as live so the banner shows. The allow-list approach was too narrow: tasks
+// in 'dispatched', 'started', or other intermediate states slipped through and
+// the user was shown nothing.
+const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled', 'done', 'errored']);
+
+async function applyActiveTaskBackfill(issueId, activeTask) {
+  const isLive = activeTask && activeTask.id && !TERMINAL_TASK_STATUSES.has(activeTask.status);
+  if (!isLive) {
+    delete state.activeTasks[issueId];
+    return;
+  }
+  const existing = state.activeTasks[issueId];
+  state.activeTasks[issueId] = {
+    task_id: activeTask.id,
+    agent_id: activeTask.agent_id,
+    agent_name: activeTask.agent?.name
+      || state.agentsById[activeTask.agent_id]?.name
+      || existing?.agent_name
+      || 'agent',
+    summary: existing?.summary
+      || (activeTask.status === 'pending' || activeTask.status === 'queued' ? 'queued…' : 'running…'),
+    started_at: activeTask.started_at || activeTask.dispatched_at || activeTask.created_at || existing?.started_at,
+  };
+  // Hydrate the message log only if we don't already have it (cheap re-entry
+  // from visibility-change refresh shouldn't refetch on every wake).
+  if (!state.taskMessages[activeTask.id] || !state.taskMessages[activeTask.id].length) {
+    try {
+      const msgs = await api(`/api/tasks/${activeTask.id}/messages?limit=50`);
+      state.taskMessages[activeTask.id] = Array.isArray(msgs) ? msgs : [];
+    } catch (e) { state.taskMessages[activeTask.id] = state.taskMessages[activeTask.id] || []; }
+  }
+}
+
 async function viewIssue(app, issueId) {
   const c = chrome('', { back: true });
   app.innerHTML = `${c.header}<main><div id="detail"><div class="loading">Loading…</div></div></main>${c.nav}`;
@@ -1025,25 +1059,7 @@ async function viewIssue(app, issueId) {
       api(`/api/issues/${issueId}/timeline`),
       api(`/api/issues/${issueId}/active-task`).catch(() => null),
     ]);
-    // Backfill active-task state from the per-issue endpoint so the banner
-    // shows immediately on cold open (WS only fires on the next progress tick).
-    if (activeTask && activeTask.id && (activeTask.status === 'pending' || activeTask.status === 'running' || activeTask.status === 'in_progress' || activeTask.status === 'queued')) {
-      state.activeTasks[issueId] = {
-        task_id: activeTask.id,
-        agent_id: activeTask.agent_id,
-        agent_name: activeTask.agent?.name || state.agentsById[activeTask.agent_id]?.name || 'agent',
-        summary: activeTask.status === 'pending' || activeTask.status === 'queued' ? 'queued…' : 'running…',
-        started_at: activeTask.started_at || activeTask.dispatched_at || activeTask.created_at,
-      };
-      // Backfill activity log so the panel isn't empty on cold open. WS task:message
-      // events take over for live append once they arrive.
-      try {
-        const msgs = await api(`/api/tasks/${activeTask.id}/messages?limit=50`);
-        state.taskMessages[activeTask.id] = Array.isArray(msgs) ? msgs : [];
-      } catch (e) { state.taskMessages[activeTask.id] = []; }
-    } else {
-      delete state.activeTasks[issueId];
-    }
+    await applyActiveTaskBackfill(issueId, activeTask);
     document.querySelector('header.top h1').textContent = issue.identifier;
     $('#detail').innerHTML = renderIssueDetail(issue, timeline || []);
     wireIssueDetail(app, issue, timeline || []);
@@ -1115,18 +1131,32 @@ function renderActivityLog(issueId) {
 }
 
 // Renders the active-task banner. Updated in place when activeTasks changes.
+// Tappable: clicking scrolls to + expands the activity log so the user can
+// see what the agent is doing without hunting for it.
 function renderActiveBanner(issueId) {
   const a = state.activeTasks[issueId];
   if (!a) return '';
   const elapsed = a.started_at ? fmtDate(a.started_at) : '';
   return `
-    <div style="background:var(--surface-2);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin-bottom:12px;display:flex;gap:8px;align-items:center;">
+    <div id="active-banner-card" role="button" tabindex="0" style="background:var(--surface-2);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin-bottom:12px;display:flex;gap:8px;align-items:center;cursor:pointer;">
       <span style="font-size:18px;line-height:1;">🤖</span>
       <div style="flex:1;min-width:0;">
         <div style="font-weight:600;font-size:13px;">${escapeHtml(a.agent_name || 'agent')} working${elapsed ? ` · ${escapeHtml(elapsed)}` : ''}</div>
         <div style="font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(a.summary || '…')}</div>
       </div>
+      <span style="font-size:18px;line-height:1;color:var(--muted);">›</span>
     </div>`;
+}
+
+// Scrolls to and expands the agent activity log. Idempotent.
+function focusActivityLog() {
+  const log = document.getElementById('activity-log');
+  if (!log) return;
+  const details = log.querySelector('details');
+  if (details) details.open = true;
+  // Use the <details> if present (post-render shape), otherwise the wrapper.
+  const target = details || log;
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // Wires up live event handlers for the issue detail view. Each subscription
@@ -1136,12 +1166,24 @@ function wireIssueLive(app, issue) {
   const issueId = issue.id;
 
   // Active-agent banner + activity log re-render on every relevant change.
+  // Each render re-installs the banner click handler since innerHTML wipes it.
+  const wireBannerTap = () => {
+    const card = document.getElementById('active-banner-card');
+    if (!card) return;
+    card.onclick = focusActivityLog;
+    card.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); focusActivityLog(); }
+    };
+  };
   const updateActiveUI = () => {
     const banner = document.getElementById('active-banner');
     if (banner) banner.innerHTML = renderActiveBanner(issueId);
     const log = document.getElementById('activity-log');
     if (log) log.innerHTML = renderActivityLog(issueId);
+    wireBannerTap();
   };
+  // Initial pass for the banner that the first render produced.
+  wireBannerTap();
   state.viewSubs.push(bus.on('activeTasks:changed', (p) => {
     if (!p || p.issue_id === issueId) updateActiveUI();
   }));
@@ -1218,6 +1260,46 @@ function wireIssueLive(app, issue) {
       } catch (e) { /* ignore */ }
     }))
   );
+
+  // Catch-up refresh: WS events get dropped while the PWA is backgrounded,
+  // and the server doesn't replay on reconnect. Re-fetch the timeline + the
+  // active task whenever the doc becomes visible, focus returns, or every
+  // 20s while visible — so missed comments and the agent banner come back.
+  const catchUp = async () => {
+    try {
+      const [fresh, activeTask] = await Promise.all([
+        api(`/api/issues/${issueId}/timeline`),
+        api(`/api/issues/${issueId}/active-task`).catch(() => null),
+      ]);
+      const wasActive = !!state.activeTasks[issueId];
+      await applyActiveTaskBackfill(issueId, activeTask);
+      const isActive = !!state.activeTasks[issueId];
+      if (wasActive !== isActive || isActive) {
+        const banner = document.getElementById('active-banner');
+        if (banner) banner.innerHTML = renderActiveBanner(issueId);
+        const log = document.getElementById('activity-log');
+        if (log) log.innerHTML = renderActivityLog(issueId);
+        wireBannerTap();
+      }
+      const el = document.getElementById('comments');
+      if (el) {
+        el.innerHTML = (fresh || []).map(renderTimelineEntry).join('')
+          || '<div class="empty" style="padding:16px;">No activity yet.</div>';
+      }
+      const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
+      const heading = document.querySelector('#detail h3');
+      if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
+    } catch (e) { /* ignore */ }
+  };
+  const onVisible = () => { if (!document.hidden) catchUp(); };
+  document.addEventListener('visibilitychange', onVisible);
+  window.addEventListener('focus', catchUp);
+  state.viewSubs.push(() => {
+    document.removeEventListener('visibilitychange', onVisible);
+    window.removeEventListener('focus', catchUp);
+  });
+  const pollId = setInterval(() => { if (!document.hidden) catchUp(); }, 20000);
+  state.viewSubs.push(() => clearInterval(pollId));
 }
 
 function renderIssueDetail(i, timeline) {
