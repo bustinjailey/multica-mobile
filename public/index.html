@@ -183,6 +183,52 @@
   .setup h1 { margin-bottom: 8px; }
   .setup p { color: var(--muted); margin-bottom: 16px; }
 
+  /* Activity log (live agent task messages) */
+  .activity-log {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .activity-log.empty {
+    padding: 10px 12px;
+    color: var(--muted);
+    font-size: 12px;
+    font-style: italic;
+  }
+  .activity-log summary {
+    padding: 10px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    user-select: none;
+  }
+  .activity-msgs {
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 0 12px 10px;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .activity-msgs .tm {
+    padding: 6px 0;
+    border-top: 1px solid var(--border);
+    word-break: break-word;
+  }
+  .activity-msgs .tm:first-child { border-top: 0; }
+  .activity-msgs .tm-text { color: var(--text); }
+  .activity-msgs .tm-tool { color: var(--accent-2); }
+  .activity-msgs .tm-tool code {
+    background: var(--surface-2);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  .activity-msgs .tm-result { color: var(--muted); padding-left: 8px; }
+  .activity-msgs .tm-error { color: var(--danger); }
+
   .inbox-dot {
     background: var(--accent); color: white;
     border-radius: 999px; padding: 1px 7px;
@@ -215,7 +261,8 @@ const state = {
   agentsById: {},
   membersById: {},
   inboxUnread: 0,
-  activeTasks: {},      // issue_id → { agent_id, agent_name, summary, started_at }
+  activeTasks: {},      // issue_id → { task_id, agent_id, agent_name, summary, started_at }
+  taskMessages: {},     // task_id → [TaskMessagePayload, ...] (for the activity log)
   wsStatus: 'offline',  // 'offline' | 'connecting' | 'online'
   viewSubs: [],         // event-bus unsubscribers for current view
   ws: null,
@@ -317,29 +364,45 @@ function handleEvent(type, payload) {
   switch (type) {
     case 'task:dispatch': {
       const iid = payload?.issue_id || payload?.task?.issue_id;
+      const tid = payload?.task_id || payload?.task?.id;
       const aid = payload?.agent_id || payload?.task?.agent_id;
       if (iid) {
         state.activeTasks[iid] = {
+          task_id: tid,
           agent_id: aid,
           agent_name: state.agentsById[aid]?.name || 'agent',
           summary: payload?.title ? `started: ${payload.title}` : 'starting…',
           started_at: payload?.dispatched_at || payload?.task?.dispatched_at || new Date().toISOString(),
         };
+        if (tid && !state.taskMessages[tid]) state.taskMessages[tid] = [];
         bus.emit('activeTasks:changed', { issue_id: iid });
       }
       break;
     }
     case 'task:progress': {
       const iid = payload?.issue_id || payload?.task?.issue_id;
+      const tid = payload?.task_id || payload?.task?.id;
       if (iid) {
         const cur = state.activeTasks[iid] || {};
         state.activeTasks[iid] = {
+          task_id: cur.task_id || tid,
           agent_id: cur.agent_id || payload?.agent_id,
           agent_name: cur.agent_name || state.agentsById[payload?.agent_id]?.name || 'agent',
           summary: payload?.summary || cur.summary || '…',
           started_at: cur.started_at || new Date().toISOString(),
         };
         bus.emit('activeTasks:changed', { issue_id: iid });
+      }
+      break;
+    }
+    case 'task:message': {
+      // Stream agent activity (text narration / tool_use / tool_result / error)
+      // into the per-task message log. View-level handlers append to the DOM.
+      const tid = payload?.task_id;
+      if (tid) {
+        if (!state.taskMessages[tid]) state.taskMessages[tid] = [];
+        state.taskMessages[tid].push(payload);
+        bus.emit('taskMessages:appended', { task_id: tid, message: payload });
       }
       break;
     }
@@ -819,11 +882,18 @@ async function viewIssue(app, issueId) {
     // shows immediately on cold open (WS only fires on the next progress tick).
     if (activeTask && activeTask.id && (activeTask.status === 'pending' || activeTask.status === 'running' || activeTask.status === 'in_progress' || activeTask.status === 'queued')) {
       state.activeTasks[issueId] = {
+        task_id: activeTask.id,
         agent_id: activeTask.agent_id,
         agent_name: activeTask.agent?.name || state.agentsById[activeTask.agent_id]?.name || 'agent',
         summary: activeTask.status === 'pending' || activeTask.status === 'queued' ? 'queued…' : 'running…',
         started_at: activeTask.started_at || activeTask.dispatched_at || activeTask.created_at,
       };
+      // Backfill activity log so the panel isn't empty on cold open. WS task:message
+      // events take over for live append once they arrive.
+      try {
+        const msgs = await api(`/api/tasks/${activeTask.id}/messages?limit=50`);
+        state.taskMessages[activeTask.id] = Array.isArray(msgs) ? msgs : [];
+      } catch (e) { state.taskMessages[activeTask.id] = []; }
     } else {
       delete state.activeTasks[issueId];
     }
@@ -834,6 +904,67 @@ async function viewIssue(app, issueId) {
   } catch (e) {
     $('#detail').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
   }
+}
+
+// Renders a single TaskMessagePayload as a compact log row.
+// Different message types get different visual treatment:
+//   text        — agent's narration / planning text
+//   tool_use    — a tool call (e.g. Bash, Read, Edit) with its inputs
+//   tool_result — the tool's output, truncated to a short preview
+//   error       — error frame from the daemon
+function renderTaskMessage(m) {
+  if (!m || !m.type) return '';
+  if (m.type === 'text') {
+    const t = (m.content || '').trim();
+    if (!t) return '';
+    return `<div class="tm tm-text">${escapeHtml(t.length > 400 ? t.slice(0, 400) + '…' : t)}</div>`;
+  }
+  if (m.type === 'tool_use') {
+    const inp = m.input || {};
+    let summary = '';
+    if (inp.command) summary = inp.command;
+    else if (inp.description) summary = inp.description;
+    else if (inp.file_path) summary = inp.file_path;
+    else if (inp.path) summary = inp.path;
+    else if (inp.url) summary = inp.url;
+    else summary = JSON.stringify(inp);
+    if (summary.length > 200) summary = summary.slice(0, 200) + '…';
+    return `<div class="tm tm-tool">🔧 <strong>${escapeHtml(m.tool || 'tool')}</strong> <code>${escapeHtml(summary)}</code></div>`;
+  }
+  if (m.type === 'tool_result') {
+    let out = (m.output || '').trim();
+    // Output is sometimes JSON-string-encoded ("\"...\""); strip the wrapping
+    // quotes if present so the preview reads naturally.
+    if (out.startsWith('"') && out.endsWith('"') && out.length > 2) {
+      try { out = JSON.parse(out); } catch {}
+    }
+    if (!out) return '';
+    const firstLine = String(out).split(/\r?\n/)[0];
+    const preview = firstLine.length > 160 ? firstLine.slice(0, 160) + '…' : firstLine;
+    return `<div class="tm tm-result">↳ ${escapeHtml(preview)}</div>`;
+  }
+  if (m.type === 'error') {
+    return `<div class="tm tm-error">✕ ${escapeHtml((m.content || '').slice(0, 300))}</div>`;
+  }
+  return '';
+}
+
+// Renders the activity log panel. Collapsed by default unless the task is
+// actively running, in which case it auto-expands so the user sees the live
+// stream without an extra tap.
+function renderActivityLog(issueId) {
+  const a = state.activeTasks[issueId];
+  if (!a || !a.task_id) return '';
+  const msgs = state.taskMessages[a.task_id] || [];
+  if (!msgs.length) {
+    return `<div class="activity-log empty">No agent activity yet — watching…</div>`;
+  }
+  const rendered = msgs.map(renderTaskMessage).filter(Boolean).join('');
+  return `
+    <details class="activity-log" open>
+      <summary>Agent activity (${msgs.length})</summary>
+      <div class="activity-msgs" id="activity-msgs">${rendered}</div>
+    </details>`;
 }
 
 // Renders the active-task banner. Updated in place when activeTasks changes.
@@ -857,13 +988,36 @@ function renderActiveBanner(issueId) {
 function wireIssueLive(app, issue) {
   const issueId = issue.id;
 
-  // Active-agent banner — live update from task:* events
-  const updateBanner = () => {
-    const slot = document.getElementById('active-banner');
-    if (slot) slot.innerHTML = renderActiveBanner(issueId);
+  // Active-agent banner + activity log re-render on every relevant change.
+  const updateActiveUI = () => {
+    const banner = document.getElementById('active-banner');
+    if (banner) banner.innerHTML = renderActiveBanner(issueId);
+    const log = document.getElementById('activity-log');
+    if (log) log.innerHTML = renderActivityLog(issueId);
   };
   state.viewSubs.push(bus.on('activeTasks:changed', (p) => {
-    if (!p || p.issue_id === issueId) updateBanner();
+    if (!p || p.issue_id === issueId) updateActiveUI();
+  }));
+  // Append-only path for task:message: avoids a full re-render on every tick
+  // (which would lose scroll position inside the activity panel).
+  state.viewSubs.push(bus.on('taskMessages:appended', ({ task_id, message }) => {
+    const a = state.activeTasks[issueId];
+    if (!a || a.task_id !== task_id) return;
+    const wrap = document.getElementById('activity-log');
+    if (!wrap) return;
+    const list = document.getElementById('activity-msgs');
+    if (!list) {
+      // Was empty placeholder; full re-render to install the <details> shell.
+      wrap.innerHTML = renderActivityLog(issueId);
+      return;
+    }
+    const html = renderTaskMessage(message);
+    if (!html) return;
+    const wasNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+    list.insertAdjacentHTML('beforeend', html);
+    const summary = wrap.querySelector('summary');
+    if (summary) summary.textContent = `Agent activity (${(state.taskMessages[task_id] || []).length})`;
+    if (wasNearBottom) list.scrollTop = list.scrollHeight;
   }));
 
   // Timeline — re-fetch on any event that could change the merged stream:
@@ -931,6 +1085,7 @@ function renderIssueDetail(i, timeline) {
       <select id="assignee">${assigneeOptions}</select>
     </div>
     <div id="active-banner">${renderActiveBanner(i.id)}</div>
+    <div id="activity-log">${renderActivityLog(i.id)}</div>
     <div id="approve-bar">${renderApprovalBar(i)}</div>
     ${commentCount > 1 ? `<button id="jump-latest" class="ghost" style="width:100%;margin-bottom:12px;font-size:13px;">↓ Jump to latest activity</button>` : ''}
     ${i.description ? `<div class="comment"><div class="body">${renderCommentBody(i.description)}</div></div>` : ''}
