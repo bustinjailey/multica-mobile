@@ -591,9 +591,10 @@ async function refreshInboxBadge() {
 
 // ===================== Routing =====================
 const routes = [
-  { match: /^#?\/?$/, view: viewInbox },
+  { match: /^#?\/?$/, view: viewIssues },
   { match: /^#\/inbox$/, view: viewInbox },
   { match: /^#\/issues$/, view: viewIssues },
+  { match: /^#\/board$/, view: viewBoard },
   { match: /^#\/issue\/([^/]+)$/, view: viewIssue },
   { match: /^#\/new$/, view: viewNewIssue },
   { match: /^#\/settings$/, view: viewSettings },
@@ -623,7 +624,7 @@ async function render() {
   state.viewSubs.forEach(unsub => { try { unsub(); } catch {} });
   state.viewSubs = [];
 
-  const hash = location.hash || '#/inbox';
+  const hash = location.hash || '#/issues';
   for (const r of routes) {
     const m = hash.match(r.match);
     if (m) {
@@ -658,13 +659,13 @@ function chrome(title, opts = {}) {
 }
 
 function bottomNav() {
-  const cur = location.hash || '#/inbox';
-  const isActive = (h) => cur === h || (h === '#/inbox' && cur === '');
-  const badge = state.inboxUnread > 0 ? `<span class="inbox-dot">${state.inboxUnread}</span>` : '';
+  const cur = location.hash || '#/issues';
+  const isActive = (h) => cur === h || (h === '#/issues' && cur === '');
   return `
     <nav class="bottom">
-      <a href="#/inbox" class="${isActive('#/inbox') ? 'active' : ''}"><span class="ico">📥</span>Inbox${badge}</a>
       <a href="#/issues" class="${isActive('#/issues') ? 'active' : ''}"><span class="ico">📋</span>Issues</a>
+      <a href="#/board" class="${isActive('#/board') ? 'active' : ''}"><span class="ico">🪜</span>Board</a>
+      <a href="#/inbox" class="${isActive('#/inbox') ? 'active' : ''}"><span class="ico">📥</span>Inbox</a>
       <a href="#/new" class="${isActive('#/new') ? 'active' : ''}"><span class="ico">＋</span>New</a>
       <a href="#/settings" class="${isActive('#/settings') ? 'active' : ''}"><span class="ico">⚙︎</span>Settings</a>
     </nav>
@@ -726,7 +727,7 @@ async function workspacePicker(app) {
       state.workspace = { id: b.dataset.id, slug: b.dataset.slug, name: b.dataset.name, issuePrefix: b.dataset.prefix };
       localStorage.setItem(LS.ws, JSON.stringify(state.workspace));
       state.agents = []; state.members = []; // force reload
-      navigate('#/inbox');
+      navigate('#/issues');
     });
   } catch (e) {
     $('#ws').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
@@ -848,17 +849,22 @@ function renderInboxItem(it, extraCount = 0) {
 }
 
 // ===================== Issues list =====================
-// Issue filter persistence keys + canonical option lists. Status options map
-// directly to the server's status enum, plus three meta values: 'any' (no
-// status filter), 'open' (open_only=true — backlog/todo/in_progress/in_review).
-const FILTER_LS = { scope: 'mm.filter.scope', status: 'mm.filter.status' };
+// Issue filter persistence keys + canonical option lists. The 'open' meta
+// means "everything except done/cancelled" — applied client-side after the
+// fetch so we don't depend on the server's open_only definition (which has
+// drifted from blocked-inclusive in the past).
+const FILTER_LS = {
+  scope: 'mm.filter.scope',
+  status: 'mm.filter.status',
+  sort: 'mm.filter.sort',
+};
 const SCOPE_OPTIONS = [
   ['mine', 'Mine'],
   ['all', 'All'],
 ];
-// Real status enum on the server. The 'any' meta means no status filter at all
-// — kept so users can see everything in one shot — but no other meta values.
+// Status filter — 'open' is the default and bundles every non-terminal state.
 const STATUS_OPTIONS = [
+  ['open', 'Open'],
   ['in_review', 'In Review'],
   ['in_progress', 'In Progress'],
   ['blocked', 'Blocked'],
@@ -868,28 +874,78 @@ const STATUS_OPTIONS = [
   ['cancelled', 'Cancelled'],
   ['any', 'All statuses'],
 ];
+const SORT_OPTIONS = [
+  ['updated', 'Updated'],
+  ['created', 'Created'],
+  ['status', 'Status'],
+  ['priority', 'Priority'],
+  ['identifier', 'Identifier'],
+];
+const NON_TERMINAL_STATUSES = new Set(['backlog', 'todo', 'in_progress', 'in_review', 'blocked']);
+// Lower = sorts to the top in the 'status' sort. Tracks how active a state is
+// from the user's POV — in_review (waiting on me) at top, done at bottom.
+const STATUS_RANK = {
+  in_review: 0, in_progress: 1, blocked: 2, todo: 3, backlog: 4, done: 5, cancelled: 6,
+};
+const PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
 function readFilter() {
   return {
     scope: sessionStorage.getItem(FILTER_LS.scope) || 'mine',
-    status: sessionStorage.getItem(FILTER_LS.status) || 'in_review',
+    status: sessionStorage.getItem(FILTER_LS.status) || 'open',
+    sort: sessionStorage.getItem(FILTER_LS.sort) || 'updated',
   };
 }
 function writeFilter(f) {
   sessionStorage.setItem(FILTER_LS.scope, f.scope);
   sessionStorage.setItem(FILTER_LS.status, f.status);
+  sessionStorage.setItem(FILTER_LS.sort, f.sort);
 }
 function buildIssueQuery(filter) {
   const params = new URLSearchParams();
-  params.set('limit', '100');
+  params.set('limit', '200');
   if (filter.scope === 'mine' && state.me?.id) {
     params.set('assignee_type', 'member');
     params.set('assignee_id', state.me.id);
   }
-  // 'any' → no status filter. 'open' is a legacy sessionStorage value some
-  // tabs may still carry from before; map to open_only to stay graceful.
-  if (filter.status === 'open') params.set('open_only', 'true');
-  else if (filter.status !== 'any') params.set('status', filter.status);
+  // 'open' / 'any' are client-side filters: fetch unfiltered and let the JS
+  // path drop terminal states. Specific statuses still hit the server filter.
+  const isMeta = filter.status === 'open' || filter.status === 'any';
+  if (!isMeta) params.set('status', filter.status);
   return params;
+}
+function applyClientFilter(arr, filter) {
+  if (filter.status === 'open') return arr.filter(i => NON_TERMINAL_STATUSES.has(i.status));
+  return arr;
+}
+function sortIssues(arr, sort) {
+  const a = arr.slice();
+  switch (sort) {
+    case 'created':
+      a.sort((x, y) => (y.created_at || '').localeCompare(x.created_at || ''));
+      break;
+    case 'status':
+      a.sort((x, y) => {
+        const dx = (STATUS_RANK[x.status] ?? 99) - (STATUS_RANK[y.status] ?? 99);
+        if (dx !== 0) return dx;
+        return (y.updated_at || '').localeCompare(x.updated_at || '');
+      });
+      break;
+    case 'priority':
+      a.sort((x, y) => {
+        const dx = (PRIORITY_RANK[x.priority] ?? 99) - (PRIORITY_RANK[y.priority] ?? 99);
+        if (dx !== 0) return dx;
+        return (y.updated_at || '').localeCompare(x.updated_at || '');
+      });
+      break;
+    case 'identifier':
+      a.sort((x, y) => (x.identifier || '').localeCompare(y.identifier || '', undefined, { numeric: true }));
+      break;
+    case 'updated':
+    default:
+      a.sort((x, y) => (y.updated_at || '').localeCompare(x.updated_at || ''));
+      break;
+  }
+  return a;
 }
 
 // Re-render only the cards in the current list, preserving scroll position.
@@ -922,25 +978,31 @@ async function viewIssues(app) {
     `<option value="${v}" ${filter.scope===v?'selected':''}>${l}</option>`).join('');
   const statusOptions = STATUS_OPTIONS.map(([v, l]) =>
     `<option value="${v}" ${filter.status===v?'selected':''}>${l}</option>`).join('');
+  const sortOptions = SORT_OPTIONS.map(([v, l]) =>
+    `<option value="${v}" ${filter.sort===v?'selected':''}>${l}</option>`).join('');
   const c = chrome('Issues');
   app.innerHTML = `${c.header}
-    <div style="position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;">
-      <select id="f-scope" style="${selectStyle}flex:1;">${scopeOptions}</select>
-      <select id="f-status" style="${selectStyle}flex:1;">${statusOptions}</select>
+    <div style="position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;">
+      <select id="f-scope" style="${selectStyle}flex:1;min-width:80px;">${scopeOptions}</select>
+      <select id="f-status" style="${selectStyle}flex:1;min-width:100px;">${statusOptions}</select>
+      <select id="f-sort" style="${selectStyle}flex:1;min-width:90px;" title="Sort">${sortOptions}</select>
     </div>
     <main><div id="list" class="list"><div class="loading">Loading…</div></div></main>${c.nav}`;
   const apply = () => {
-    writeFilter({ scope: $('#f-scope').value, status: $('#f-status').value });
+    writeFilter({ scope: $('#f-scope').value, status: $('#f-status').value, sort: $('#f-sort').value });
     viewIssues(app);
   };
   $('#f-scope').onchange = apply;
   $('#f-status').onchange = apply;
+  $('#f-sort').onchange = apply;
   try {
     const params = buildIssueQuery(filter);
     const issues = await api(`/api/issues?${params}`);
-    const arr = Array.isArray(issues) ? issues : (issues.issues || []);
-    if (!arr.length) { $('#list').innerHTML = `<div class="empty">No issues.</div>`; return; }
-    $('#list').innerHTML = arr.map(renderIssueCard).join('');
+    const raw = Array.isArray(issues) ? issues : (issues.issues || []);
+    const filtered = applyClientFilter(raw, filter);
+    const sorted = sortIssues(filtered, filter.sort);
+    if (!sorted.length) { $('#list').innerHTML = `<div class="empty">No issues.</div>`; return; }
+    $('#list').innerHTML = sorted.map(renderIssueCard).join('');
     $$('#list .card').forEach(el => {
       el.onclick = () => navigate(`#/issue/${el.dataset.id}`);
     });
@@ -951,6 +1013,61 @@ async function viewIssues(app) {
   state.viewSubs.push(bus.on('activeTasks:changed', refreshIssuesList));
   state.viewSubs.push(bus.on('issue:created', () => viewIssues(app)));
   state.viewSubs.push(bus.on('issue:updated', () => viewIssues(app)));
+}
+
+// Kanban-style swim lanes. Mobile-first: each column is fixed-width with
+// snap-scroll on the lane container, so the user pages between columns
+// horizontally instead of trying to fit five lanes on a 380px screen.
+const BOARD_LANES = ['in_review', 'in_progress', 'blocked', 'todo', 'backlog'];
+
+async function viewBoard(app) {
+  const filter = readFilter();
+  const selectStyle = 'width:auto;min-height:36px;padding:6px 8px;font-size:13px;';
+  const scopeOptions = SCOPE_OPTIONS.map(([v, l]) =>
+    `<option value="${v}" ${filter.scope===v?'selected':''}>${l}</option>`).join('');
+  const c = chrome('Board');
+  app.innerHTML = `${c.header}
+    <div style="position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:6px;">
+      <select id="b-scope" style="${selectStyle}flex:1;">${scopeOptions}</select>
+    </div>
+    <main style="padding:0;">
+      <div id="board" style="display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:12px;height:calc(100vh - 160px);">
+        <div class="loading">Loading…</div>
+      </div>
+    </main>${c.nav}`;
+  $('#b-scope').onchange = () => {
+    writeFilter({ ...filter, scope: $('#b-scope').value });
+    viewBoard(app);
+  };
+  try {
+    const params = buildIssueQuery({ ...filter, status: 'open' });
+    const issues = await api(`/api/issues?${params}`);
+    const raw = Array.isArray(issues) ? issues : (issues.issues || []);
+    const open = raw.filter(i => NON_TERMINAL_STATUSES.has(i.status));
+    const byLane = Object.fromEntries(BOARD_LANES.map(s => [s, []]));
+    for (const i of open) if (byLane[i.status]) byLane[i.status].push(i);
+    for (const s of BOARD_LANES) byLane[s] = sortIssues(byLane[s], 'updated');
+    $('#board').innerHTML = BOARD_LANES.map(s => `
+      <section class="lane" data-status="${s}" style="flex:0 0 86vw;max-width:340px;scroll-snap-align:start;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;">
+        <header style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
+          <span class="pill status-${s}">${prettyStatus(s)}</span>
+          <span style="margin-left:auto;font-size:12px;color:var(--muted);">${byLane[s].length}</span>
+        </header>
+        <div class="lane-cards" style="flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:8px;">
+          ${byLane[s].length
+            ? byLane[s].map(renderIssueCard).join('')
+            : '<div class="empty" style="padding:8px;font-size:12px;">Empty</div>'}
+        </div>
+      </section>`).join('');
+    $$('#board .card').forEach(el => {
+      el.onclick = () => navigate(`#/issue/${el.dataset.id}`);
+    });
+  } catch (e) {
+    $('#board').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
+  }
+  state.viewSubs.push(bus.on('activeTasks:changed', () => viewBoard(app)));
+  state.viewSubs.push(bus.on('issue:created', () => viewBoard(app)));
+  state.viewSubs.push(bus.on('issue:updated', () => viewBoard(app)));
 }
 
 function renderIssueCard(i) {
