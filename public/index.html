@@ -663,6 +663,46 @@ function renderInboxItem(it) {
 }
 
 // ===================== Issues list =====================
+// Issue filter persistence keys + canonical option lists. Status options map
+// directly to the server's status enum, plus three meta values: 'any' (no
+// status filter), 'open' (open_only=true — backlog/todo/in_progress/in_review).
+const FILTER_LS = { scope: 'mm.filter.scope', status: 'mm.filter.status' };
+const SCOPE_OPTIONS = [
+  ['mine', 'Mine'],
+  ['all', 'All'],
+];
+const STATUS_OPTIONS = [
+  ['open', 'Open'],
+  ['in_review', 'In Review'],
+  ['in_progress', 'In Progress'],
+  ['todo', 'Todo'],
+  ['backlog', 'Backlog'],
+  ['done', 'Done'],
+  ['cancelled', 'Cancelled'],
+  ['any', 'Any status'],
+];
+function readFilter() {
+  return {
+    scope: sessionStorage.getItem(FILTER_LS.scope) || 'mine',
+    status: sessionStorage.getItem(FILTER_LS.status) || 'open',
+  };
+}
+function writeFilter(f) {
+  sessionStorage.setItem(FILTER_LS.scope, f.scope);
+  sessionStorage.setItem(FILTER_LS.status, f.status);
+}
+function buildIssueQuery(filter) {
+  const params = new URLSearchParams();
+  params.set('limit', '100');
+  if (filter.scope === 'mine' && state.me?.id) {
+    params.set('assignee_type', 'member');
+    params.set('assignee_id', state.me.id);
+  }
+  if (filter.status === 'open') params.set('open_only', 'true');
+  else if (filter.status !== 'any') params.set('status', filter.status);
+  return params;
+}
+
 // Re-render only the cards in the current list, preserving scroll position.
 // Called when activeTasks changes so 🤖 badges flip without a full re-fetch.
 function refreshIssuesList() {
@@ -687,28 +727,27 @@ function refreshIssuesList() {
 }
 
 async function viewIssues(app) {
-  const filter = sessionStorage.getItem('mm.issuesFilter') || 'open';
-  const c = chrome('Issues', {
-    right: `<select id="filter" style="width:auto;min-height:36px;padding:6px 8px;">
-      <option value="open" ${filter==='open'?'selected':''}>Open</option>
-      <option value="mine" ${filter==='mine'?'selected':''}>Assigned to me</option>
-      <option value="all" ${filter==='all'?'selected':''}>All</option>
-    </select>`,
-  });
-  app.innerHTML = `${c.header}<main><div id="list" class="list"><div class="loading">Loading…</div></div></main>${c.nav}`;
-  $('#filter').onchange = (e) => { sessionStorage.setItem('mm.issuesFilter', e.target.value); viewIssues(app); };
+  const filter = readFilter();
+  const selectStyle = 'width:auto;min-height:36px;padding:6px 8px;font-size:13px;';
+  const scopeOptions = SCOPE_OPTIONS.map(([v, l]) =>
+    `<option value="${v}" ${filter.scope===v?'selected':''}>${l}</option>`).join('');
+  const statusOptions = STATUS_OPTIONS.map(([v, l]) =>
+    `<option value="${v}" ${filter.status===v?'selected':''}>${l}</option>`).join('');
+  const c = chrome('Issues');
+  app.innerHTML = `${c.header}
+    <div style="position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;">
+      <select id="f-scope" style="${selectStyle}flex:1;">${scopeOptions}</select>
+      <select id="f-status" style="${selectStyle}flex:1;">${statusOptions}</select>
+    </div>
+    <main><div id="list" class="list"><div class="loading">Loading…</div></div></main>${c.nav}`;
+  const apply = () => {
+    writeFilter({ scope: $('#f-scope').value, status: $('#f-status').value });
+    viewIssues(app);
+  };
+  $('#f-scope').onchange = apply;
+  $('#f-status').onchange = apply;
   try {
-    const params = new URLSearchParams();
-    params.set('limit', '50');
-    if (filter === 'open') params.set('open_only', 'true');
-    if (filter === 'mine' && state.me?.id) {
-      // For member-assigned issues, the server stores user_id in assignee_id
-      // (verified empirically: querying with member.id returns 0 issues, with
-      // user_id returns the expected set). The dropdown and mention picker
-      // also emit user_id for consistency.
-      params.set('assignee_type', 'member');
-      params.set('assignee_id', state.me.id);
-    }
+    const params = buildIssueQuery(filter);
     const issues = await api(`/api/issues?${params}`);
     const arr = Array.isArray(issues) ? issues : (issues.issues || []);
     if (!arr.length) { $('#list').innerHTML = `<div class="empty">No issues.</div>`; return; }
