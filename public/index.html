@@ -810,9 +810,9 @@ async function viewIssue(app, issueId) {
   const c = chrome('', { back: true });
   app.innerHTML = `${c.header}<main><div id="detail"><div class="loading">Loading…</div></div></main>${c.nav}`;
   try {
-    const [issue, comments, activeTask] = await Promise.all([
+    const [issue, timeline, activeTask] = await Promise.all([
       api(`/api/issues/${issueId}`),
-      api(`/api/issues/${issueId}/comments`),
+      api(`/api/issues/${issueId}/timeline`),
       api(`/api/issues/${issueId}/active-task`).catch(() => null),
     ]);
     // Backfill active-task state from the per-issue endpoint so the banner
@@ -828,8 +828,8 @@ async function viewIssue(app, issueId) {
       delete state.activeTasks[issueId];
     }
     document.querySelector('header.top h1').textContent = issue.identifier;
-    $('#detail').innerHTML = renderIssueDetail(issue, comments || []);
-    wireIssueDetail(app, issue, comments || []);
+    $('#detail').innerHTML = renderIssueDetail(issue, timeline || []);
+    wireIssueDetail(app, issue, timeline || []);
     wireIssueLive(app, issue);
   } catch (e) {
     $('#detail').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
@@ -866,20 +866,22 @@ function wireIssueLive(app, issue) {
     if (!p || p.issue_id === issueId) updateBanner();
   }));
 
-  // Comments — re-fetch on any comment event for this issue
-  const refreshComments = async (payload) => {
-    const cIssueId = payload?.issue_id || payload?.comment?.issue_id;
+  // Timeline — re-fetch on any event that could change the merged stream:
+  // comments, reactions, activity (assignment/status/priority changes).
+  const refreshTimeline = async (payload) => {
+    const cIssueId = payload?.issue_id || payload?.comment?.issue_id || payload?.activity?.issue_id;
     if (cIssueId && cIssueId !== issueId) return;
     try {
-      const fresh = await api(`/api/issues/${issueId}/comments`);
+      const fresh = await api(`/api/issues/${issueId}/timeline`);
       const el = document.getElementById('comments');
-      if (el) el.innerHTML = (fresh || []).map(renderCommentEl).join('') || '<div class="empty" style="padding:16px;">No comments yet.</div>';
+      if (el) el.innerHTML = (fresh || []).map(renderTimelineEntry).join('') || '<div class="empty" style="padding:16px;">No activity yet.</div>';
+      const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
       const heading = document.querySelector('#detail h3');
-      if (heading) heading.textContent = `Comments (${(fresh || []).length})`;
+      if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
     } catch (e) { /* ignore */ }
   };
-  ['comment:created', 'comment:updated', 'comment:deleted', 'reaction:added', 'reaction:removed']
-    .forEach(t => state.viewSubs.push(bus.on(t, refreshComments)));
+  ['comment:created', 'comment:updated', 'comment:deleted', 'reaction:added', 'reaction:removed', 'activity:created']
+    .forEach(t => state.viewSubs.push(bus.on(t, refreshTimeline)));
 
   // Issue updates (status/assignee changed by another client)
   state.viewSubs.push(bus.on('issue:updated', async (payload) => {
@@ -917,8 +919,9 @@ function wireIssueLive(app, issue) {
   );
 }
 
-function renderIssueDetail(i, comments) {
+function renderIssueDetail(i, timeline) {
   const assigneeOptions = buildAssigneeOptions(i.assignee_type, i.assignee_id);
+  const commentCount = timeline.filter(t => t.type === 'comment').length;
   return `
     <h2 style="margin:0 0 8px;font-size:20px;line-height:1.3;word-break:break-word;">${escapeHtml(i.title)}</h2>
     <div class="row" style="margin-bottom:12px;">
@@ -929,10 +932,11 @@ function renderIssueDetail(i, comments) {
     </div>
     <div id="active-banner">${renderActiveBanner(i.id)}</div>
     <div id="approve-bar">${renderApprovalBar(i)}</div>
+    ${commentCount > 1 ? `<button id="jump-latest" class="ghost" style="width:100%;margin-bottom:12px;font-size:13px;">↓ Jump to latest activity</button>` : ''}
     ${i.description ? `<div class="comment"><div class="body">${renderCommentBody(i.description)}</div></div>` : ''}
 
-    <h3 style="font-size:14px;color:var(--muted);margin:20px 0 8px;">Comments (${comments.length})</h3>
-    <div id="comments">${comments.map(renderCommentEl).join('') || '<div class="empty" style="padding:16px;">No comments yet.</div>'}</div>
+    <h3 style="font-size:14px;color:var(--muted);margin:20px 0 8px;">History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})</h3>
+    <div id="comments">${timeline.map(renderTimelineEntry).join('') || '<div class="empty" style="padding:16px;">No activity yet.</div>'}</div>
 
     <div class="composer" style="margin-top:16px;">
       <textarea id="composer-text" placeholder="Comment… (type @ to mention an agent or member)"></textarea>
@@ -943,6 +947,76 @@ function renderIssueDetail(i, comments) {
       </div>
     </div>
   `;
+}
+
+// Resolve an actor (agent/member/user) to a display name.
+function actorName(actorType, actorId) {
+  if (!actorType || !actorId) return 'someone';
+  if (actorType === 'agent') return state.agentsById[actorId]?.name || 'agent';
+  if (actorType === 'member' || actorType === 'user') {
+    return state.membersById[actorId]?.name || state.membersById[actorId]?.email || 'member';
+  }
+  return actorType;
+}
+
+// Render an "X reassigned to Y" / "X changed status to Z" inline activity row.
+function renderActivityEntry(a) {
+  const who = actorName(a.actor_type, a.actor_id);
+  const when = fmtDate(a.created_at);
+  let body = '';
+  const d = a.details || {};
+  switch (a.action) {
+    case 'created':
+      body = `created the issue`;
+      break;
+    case 'status_changed':
+      body = `changed status: <strong>${prettyStatus(d.from || '?')}</strong> → <strong>${prettyStatus(d.to || '?')}</strong>`;
+      break;
+    case 'assignee_changed': {
+      const from = d.from_id ? actorName(d.from_type, d.from_id) : 'unassigned';
+      const to = d.to_id ? actorName(d.to_type, d.to_id) : 'unassigned';
+      body = `reassigned: <strong>${escapeHtml(from)}</strong> → <strong>${escapeHtml(to)}</strong>`;
+      break;
+    }
+    case 'description_updated':
+      body = `updated the description`;
+      break;
+    case 'priority_changed':
+      body = `changed priority: ${escapeHtml(d.from || '?')} → ${escapeHtml(d.to || '?')}`;
+      break;
+    case 'task_failed':
+      body = `agent task failed${d.error ? `: ${escapeHtml(String(d.error).slice(0, 100))}` : ''}`;
+      break;
+    case 'task_started':
+      body = `agent task started`;
+      break;
+    case 'task_completed':
+      body = `agent task completed`;
+      break;
+    default:
+      body = `<em>${escapeHtml(a.action || 'activity')}</em>`;
+  }
+  return `
+    <div style="font-size:12px;color:var(--muted);padding:6px 12px;border-left:2px solid var(--border);margin:4px 0 4px 4px;">
+      <strong>${escapeHtml(who)}</strong> ${body} · ${escapeHtml(when)}
+    </div>`;
+}
+
+function renderTimelineEntry(t) {
+  if (t.type === 'comment') {
+    // Adapt timeline-shape comment entry to the existing renderCommentEl.
+    return renderCommentEl({
+      id: t.id,
+      author_type: t.actor_type,
+      author_id: t.actor_id,
+      content: t.content || '',
+      created_at: t.created_at,
+      reactions: t.reactions || [],
+      type: t.comment_type || 'comment',
+    });
+  }
+  if (t.type === 'activity') return renderActivityEntry(t);
+  return '';
 }
 
 // +1 / approve button — uses the Multica reaction API. Mirrors the architect →
@@ -1032,8 +1106,18 @@ function buildAssigneeOptions(curType, curId) {
   return html;
 }
 
-function wireIssueDetail(app, issue, comments) {
+function wireIssueDetail(app, issue, timeline) {
   wireApproveBar(issue);
+  // Jump-to-latest button: scroll the last activity entry into view.
+  const jumpBtn = document.getElementById('jump-latest');
+  if (jumpBtn) {
+    jumpBtn.onclick = () => {
+      const list = document.getElementById('comments');
+      const last = list?.lastElementChild;
+      if (last) last.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      else list?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    };
+  }
   // Status change
   $('#status').onchange = async (e) => {
     const newStatus = e.target.value;
@@ -1130,9 +1214,14 @@ function wireIssueDetail(app, issue, comments) {
       });
       ta.value = '';
       closePicker();
-      // Re-fetch comments
-      const fresh = await api(`/api/issues/${issue.id}/comments`);
-      $('#comments').innerHTML = fresh.map(renderCommentEl).join('');
+      // Re-fetch timeline (comments + activities). Live event listeners will
+      // also fire from the WS broadcast, but a direct re-fetch removes the
+      // round-trip blink for the sender.
+      const fresh = await api(`/api/issues/${issue.id}/timeline`);
+      $('#comments').innerHTML = (fresh || []).map(renderTimelineEntry).join('');
+      const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
+      const heading = document.querySelector('#detail h3');
+      if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
       toast('Sent');
     } catch (e) {
       toast(e.message);
