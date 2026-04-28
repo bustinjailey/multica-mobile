@@ -1,0 +1,847 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Multica">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Multica</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --surface: #111827;
+    --surface-2: #1a2333;
+    --border: #243043;
+    --text: #e5e7eb;
+    --muted: #94a3b8;
+    --accent: #3b82f6;
+    --accent-2: #60a5fa;
+    --danger: #ef4444;
+    --warning: #f59e0b;
+    --success: #10b981;
+    --safe-top: env(safe-area-inset-top);
+    --safe-bottom: env(safe-area-inset-bottom);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --surface-2: #f1f5f9;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button {
+    background: var(--accent);
+    color: white;
+    border: 0;
+    border-radius: 10px;
+    padding: 12px 16px;
+    min-height: 44px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  button:disabled { opacity: 0.5; }
+  button.ghost { background: var(--surface-2); color: var(--text); }
+  button.danger { background: var(--danger); }
+  button.icon { padding: 8px 12px; min-width: 44px; }
+  input, textarea, select {
+    width: 100%;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    min-height: 44px;
+    outline: none;
+  }
+  textarea { min-height: 100px; resize: vertical; }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  a { color: var(--accent-2); }
+
+  /* Layout */
+  #app { padding-bottom: calc(72px + var(--safe-bottom)); min-height: 100dvh; }
+  header.top {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: calc(12px + var(--safe-top)) 16px 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  header.top h1 { margin: 0; font-size: 18px; font-weight: 700; flex: 1; }
+  header.top .back { background: transparent; padding: 8px; min-height: 0; color: var(--text); }
+  main { padding: 12px 16px; }
+  nav.bottom {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    padding-bottom: var(--safe-bottom);
+  }
+  nav.bottom a {
+    text-align: center; padding: 12px 4px 14px;
+    text-decoration: none; color: var(--muted);
+    font-size: 11px; font-weight: 600;
+  }
+  nav.bottom a.active { color: var(--accent-2); }
+  nav.bottom .ico { font-size: 22px; display: block; line-height: 1; margin-bottom: 4px; }
+
+  /* Cards / lists */
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    display: block;
+    color: inherit;
+    text-decoration: none;
+  }
+  .card .row1 { display: flex; gap: 8px; align-items: baseline; }
+  .card .ident { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .card .title { flex: 1; font-weight: 600; word-break: break-word; }
+  .card .meta { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .pill {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 999px; font-size: 11px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--surface-2);
+  }
+  .pill.status-backlog { color: var(--muted); }
+  .pill.status-todo { color: #94a3b8; }
+  .pill.status-in_progress { color: #fbbf24; border-color: #92400e; }
+  .pill.status-in_review { color: #c084fc; border-color: #6b21a8; }
+  .pill.status-done { color: #34d399; border-color: #065f46; }
+  .pill.status-cancelled { color: var(--muted); text-decoration: line-through; }
+  .pill.priority-urgent { color: var(--danger); border-color: var(--danger); }
+  .pill.priority-high { color: var(--warning); }
+
+  /* Comments */
+  .comment {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+  .comment .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 6px; align-items: center; }
+  .comment .who .badge { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; font-size: 10px; }
+  .comment .body { white-space: pre-wrap; word-break: break-word; }
+  .comment .body a[href^="mention://agent"], .comment .body a[href^="mention://member"], .comment .body a[href^="mention://all"] {
+    background: var(--surface-2); padding: 1px 6px; border-radius: 4px;
+    text-decoration: none; color: var(--accent-2); font-weight: 600;
+  }
+
+  /* Forms */
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+
+  /* Composer */
+  .composer { position: relative; }
+  .composer .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .mention-picker {
+    position: absolute; bottom: calc(100% + 4px); left: 0; right: 0;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; max-height: 240px; overflow-y: auto;
+    z-index: 20; box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
+  }
+  .mention-picker .item {
+    padding: 12px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 8px; align-items: center; cursor: pointer;
+  }
+  .mention-picker .item:last-child { border-bottom: 0; }
+  .mention-picker .item:hover, .mention-picker .item.active { background: var(--surface-2); }
+  .mention-picker .badge { font-size: 10px; color: var(--muted); }
+
+  /* Empty / loading */
+  .empty, .loading { text-align: center; color: var(--muted); padding: 40px 16px; }
+  .err { color: var(--danger); padding: 12px; background: rgba(239,68,68,0.1); border-radius: 8px; margin: 12px 0; }
+  .toast {
+    position: fixed; bottom: calc(80px + var(--safe-bottom)); left: 16px; right: 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 12px 16px; border-radius: 10px; z-index: 100;
+    text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+
+  /* Setup */
+  .setup { max-width: 480px; margin: 24px auto; padding: 0 16px; }
+  .setup h1 { margin-bottom: 8px; }
+  .setup p { color: var(--muted); margin-bottom: 16px; }
+
+  .inbox-dot {
+    background: var(--accent); color: white;
+    border-radius: 999px; padding: 1px 7px;
+    font-size: 11px; font-weight: 700;
+    display: inline-block; margin-left: 4px;
+  }
+</style>
+</head>
+<body>
+<div id="app"><div class="loading">Loading…</div></div>
+
+<script type="module">
+// ===================== Config / state =====================
+const LS = {
+  pat: 'mm.pat',
+  ws: 'mm.workspace',     // {id, slug, name, issuePrefix}
+  base: 'mm.api_base',    // override for non-default origin
+};
+
+// API base: same-origin by default, but allow override (so this file can be
+// opened locally during development).
+const apiBase = () => localStorage.getItem(LS.base) || (location.origin || 'https://multica.bustinjailey.org');
+
+const state = {
+  me: null,
+  workspaces: [],
+  workspace: JSON.parse(localStorage.getItem(LS.ws) || 'null'),
+  agents: [],     // for current workspace
+  members: [],    // for current workspace
+  agentsById: {},
+  membersById: {},
+  inboxUnread: 0,
+};
+
+// ===================== HTTP helpers =====================
+function authHeaders(extra = {}) {
+  const pat = localStorage.getItem(LS.pat);
+  const h = { 'Accept': 'application/json', ...extra };
+  if (pat) h['Authorization'] = `Bearer ${pat}`;
+  if (state.workspace?.slug) h['X-Workspace-Slug'] = state.workspace.slug;
+  return h;
+}
+async function api(path, opts = {}) {
+  const r = await fetch(apiBase() + path, {
+    ...opts,
+    headers: authHeaders(opts.body ? { 'Content-Type': 'application/json', ...(opts.headers||{}) } : (opts.headers||{})),
+  });
+  if (r.status === 204) return null;
+  const ct = r.headers.get('content-type') || '';
+  const body = ct.includes('application/json') ? await r.json() : await r.text();
+  if (!r.ok) {
+    const msg = (body && body.error) ? body.error : (typeof body === 'string' ? body : `HTTP ${r.status}`);
+    throw new Error(msg);
+  }
+  return body;
+}
+
+// ===================== Helpers =====================
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const escapeHtml = (s) => (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtDate = (s) => {
+  if (!s) return '';
+  const d = new Date(s);
+  const now = new Date();
+  const diffMs = now - d;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d`;
+  return d.toLocaleDateString();
+};
+
+function toast(msg, ms = 2000) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+function renderCommentBody(content) {
+  // Escape, then turn [text](mention://...) and [text](url) into pills/links.
+  let out = escapeHtml(content || '');
+  // Match markdown links [text](url)
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, text, url) => {
+    const safeUrl = url.replace(/"/g, '&quot;');
+    if (url.startsWith('mention://')) {
+      return `<a href="${safeUrl}">${escapeHtml(text)}</a>`;
+    }
+    if (/^https?:/.test(url)) {
+      return `<a href="${safeUrl}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`;
+    }
+    return m;
+  });
+  return out;
+}
+
+// ===================== Workspace setup / agents cache =====================
+async function loadWorkspaceData() {
+  if (!state.workspace) return;
+  const [agents, members] = await Promise.all([
+    api('/api/agents?include_archived=false').catch(() => []),
+    api(`/api/workspaces/${state.workspace.id}/members`).catch(() => []),
+  ]);
+  state.agents = Array.isArray(agents) ? agents : [];
+  state.members = Array.isArray(members) ? members : [];
+  state.agentsById = Object.fromEntries(state.agents.map(a => [a.id, a]));
+  // Members payload contains nested user; keep both keyed by member id and user id.
+  // Members payload is flat: {id, user_id, role, name, email, avatar_url}.
+  // Index by both member.id and user.id so we can resolve assignee_id (member id)
+  // and author_id (user id, for human-authored comments) to the same record.
+  state.membersById = {};
+  for (const m of state.members) {
+    if (m.id) state.membersById[m.id] = m;
+    if (m.user_id) state.membersById[m.user_id] = m;
+  }
+}
+
+async function refreshInboxBadge() {
+  if (!state.workspace) return;
+  try {
+    const r = await api('/api/inbox/unread-count');
+    state.inboxUnread = r?.count ?? 0;
+  } catch {}
+}
+
+// ===================== Routing =====================
+const routes = [
+  { match: /^#?\/?$/, view: viewInbox },
+  { match: /^#\/inbox$/, view: viewInbox },
+  { match: /^#\/issues$/, view: viewIssues },
+  { match: /^#\/issue\/([^/]+)$/, view: viewIssue },
+  { match: /^#\/new$/, view: viewNewIssue },
+  { match: /^#\/settings$/, view: viewSettings },
+];
+
+function navigate(hash) {
+  if (location.hash !== hash) location.hash = hash;
+  else render();
+}
+
+async function render() {
+  const app = $('#app');
+  const pat = localStorage.getItem(LS.pat);
+  if (!pat) return setupView(app);
+  if (!state.workspace) return workspacePicker(app);
+
+  // Lazy-load shared data on first render
+  if (state.agents.length === 0) {
+    try { await loadWorkspaceData(); } catch (e) { console.warn(e); }
+  }
+  refreshInboxBadge().catch(() => {});
+
+  const hash = location.hash || '#/inbox';
+  for (const r of routes) {
+    const m = hash.match(r.match);
+    if (m) {
+      try { await r.view(app, ...m.slice(1)); }
+      catch (e) { app.innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`; }
+      return;
+    }
+  }
+  app.innerHTML = `<div class="empty">Not found</div>`;
+}
+
+window.addEventListener('hashchange', render);
+window.addEventListener('focus', () => { refreshInboxBadge().then(() => updateBottomNav()); });
+
+function chrome(title, opts = {}) {
+  const back = opts.back ? `<button class="back" onclick="history.back()">←</button>` : '';
+  const right = opts.right || '';
+  const tabs = opts.hideNav ? '' : bottomNav();
+  return {
+    header: `<header class="top">${back}<h1>${escapeHtml(title)}</h1>${right}</header>`,
+    nav: tabs,
+  };
+}
+
+function bottomNav() {
+  const cur = location.hash || '#/inbox';
+  const isActive = (h) => cur === h || (h === '#/inbox' && cur === '');
+  const badge = state.inboxUnread > 0 ? `<span class="inbox-dot">${state.inboxUnread}</span>` : '';
+  return `
+    <nav class="bottom">
+      <a href="#/inbox" class="${isActive('#/inbox') ? 'active' : ''}"><span class="ico">📥</span>Inbox${badge}</a>
+      <a href="#/issues" class="${isActive('#/issues') ? 'active' : ''}"><span class="ico">📋</span>Issues</a>
+      <a href="#/new" class="${isActive('#/new') ? 'active' : ''}"><span class="ico">＋</span>New</a>
+      <a href="#/settings" class="${isActive('#/settings') ? 'active' : ''}"><span class="ico">⚙︎</span>Settings</a>
+    </nav>
+  `;
+}
+
+function updateBottomNav() {
+  const nav = document.querySelector('nav.bottom');
+  if (nav) nav.outerHTML = bottomNav();
+}
+
+// ===================== Setup view =====================
+function setupView(app) {
+  app.innerHTML = `
+    <div class="setup">
+      <h1>Multica Mobile</h1>
+      <p>Paste a Personal Access Token from Multica's web app (Settings → Personal Access Tokens) to get started.</p>
+      <div class="field">
+        <label>Personal Access Token</label>
+        <input id="pat" autocomplete="off" placeholder="mt_pat_…">
+      </div>
+      <div class="field">
+        <label>API base (optional)</label>
+        <input id="base" placeholder="${apiBase()}" value="${escapeHtml(localStorage.getItem(LS.base)||'')}">
+      </div>
+      <button id="save">Continue</button>
+      <div id="err"></div>
+    </div>
+  `;
+  $('#save').onclick = async () => {
+    const pat = $('#pat').value.trim();
+    const base = $('#base').value.trim();
+    if (!pat) return;
+    if (base) localStorage.setItem(LS.base, base); else localStorage.removeItem(LS.base);
+    localStorage.setItem(LS.pat, pat);
+    try {
+      state.me = await api('/api/me');
+      render();
+    } catch (e) {
+      $('#err').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
+      localStorage.removeItem(LS.pat);
+    }
+  };
+}
+
+async function workspacePicker(app) {
+  app.innerHTML = `<div class="setup"><h1>Choose workspace</h1><div id="ws"></div></div>`;
+  try {
+    const wss = await api('/api/workspaces');
+    state.workspaces = wss;
+    const html = wss.map(w => `
+      <button class="card" data-id="${w.id}" data-slug="${w.slug}" data-name="${escapeHtml(w.name)}" data-prefix="${w.issue_prefix||''}" style="text-align:left;width:100%;margin-bottom:8px;background:var(--surface);">
+        <div class="title">${escapeHtml(w.name)}</div>
+        <div class="meta"><span>${escapeHtml(w.slug)}</span></div>
+      </button>
+    `).join('');
+    $('#ws').innerHTML = html || `<div class="empty">No workspaces</div>`;
+    $$('#ws .card').forEach(b => b.onclick = () => {
+      state.workspace = { id: b.dataset.id, slug: b.dataset.slug, name: b.dataset.name, issuePrefix: b.dataset.prefix };
+      localStorage.setItem(LS.ws, JSON.stringify(state.workspace));
+      state.agents = []; state.members = []; // force reload
+      navigate('#/inbox');
+    });
+  } catch (e) {
+    $('#ws').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ===================== Inbox =====================
+async function viewInbox(app) {
+  const c = chrome('Inbox', { right: `<button class="icon ghost" onclick="location.reload()">↻</button>` });
+  app.innerHTML = `${c.header}<main><div id="list" class="list"><div class="loading">Loading…</div></div></main>${c.nav}`;
+  try {
+    const items = await api('/api/inbox');
+    if (!items?.length) { $('#list').innerHTML = `<div class="empty">Nothing in your inbox.</div>`; return; }
+    $('#list').innerHTML = items.map(renderInboxItem).join('');
+    $$('#list .card').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.archive-btn')) return;
+        const issueId = el.dataset.issueId;
+        const inboxId = el.dataset.id;
+        // mark read in background
+        if (el.dataset.unread === '1') {
+          api(`/api/inbox/${inboxId}/read`, { method: 'POST' }).catch(()=>{});
+        }
+        if (issueId) navigate(`#/issue/${issueId}`);
+      };
+    });
+    $$('#list .archive-btn').forEach(b => b.onclick = async (e) => {
+      e.stopPropagation();
+      const id = b.dataset.id;
+      try {
+        await api(`/api/inbox/${id}/archive`, { method: 'POST' });
+        b.closest('.card').remove();
+      } catch (err) { toast(err.message); }
+    });
+  } catch (e) {
+    $('#list').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderInboxItem(it) {
+  const issueId = it.issue_id || '';
+  const title = it.title || '(notification)';
+  const body = it.body || '';
+  const sub = it.type || '';
+  const unread = !it.read;
+  return `
+    <div class="card" data-id="${it.id}" data-issue-id="${issueId}" data-unread="${unread ? '1' : '0'}" style="cursor:pointer;${unread ? 'border-color:var(--accent);' : ''}">
+      <div class="row1">
+        <div class="title">${escapeHtml(title)}</div>
+        <button class="archive-btn icon ghost" data-id="${it.id}" title="Archive">×</button>
+      </div>
+      ${body ? `<div style="font-size:13px;color:var(--muted);margin-top:4px;">${escapeHtml(body)}</div>` : ''}
+      <div class="meta">
+        <span>${escapeHtml(sub)}</span>
+        ${it.issue_status ? `<span class="pill status-${it.issue_status}">${prettyStatus(it.issue_status)}</span>` : ''}
+        <span style="margin-left:auto;">${fmtDate(it.created_at)}</span>
+      </div>
+    </div>`;
+}
+
+// ===================== Issues list =====================
+async function viewIssues(app) {
+  const filter = sessionStorage.getItem('mm.issuesFilter') || 'open';
+  const c = chrome('Issues', {
+    right: `<select id="filter" style="width:auto;min-height:36px;padding:6px 8px;">
+      <option value="open" ${filter==='open'?'selected':''}>Open</option>
+      <option value="mine" ${filter==='mine'?'selected':''}>Assigned to me</option>
+      <option value="all" ${filter==='all'?'selected':''}>All</option>
+    </select>`,
+  });
+  app.innerHTML = `${c.header}<main><div id="list" class="list"><div class="loading">Loading…</div></div></main>${c.nav}`;
+  $('#filter').onchange = (e) => { sessionStorage.setItem('mm.issuesFilter', e.target.value); viewIssues(app); };
+  try {
+    const params = new URLSearchParams();
+    params.set('limit', '50');
+    if (filter === 'open') params.set('open_only', 'true');
+    if (filter === 'mine' && state.me?.id) {
+      // member id, not user id — find ourselves in workspace members
+      const myMember = state.members.find(m => m.user_id === state.me.id);
+      if (myMember) {
+        params.set('assignee_type', 'member');
+        params.set('assignee_id', myMember.id);
+      }
+    }
+    const issues = await api(`/api/issues?${params}`);
+    const arr = Array.isArray(issues) ? issues : (issues.issues || []);
+    if (!arr.length) { $('#list').innerHTML = `<div class="empty">No issues.</div>`; return; }
+    $('#list').innerHTML = arr.map(renderIssueCard).join('');
+    $$('#list .card').forEach(el => {
+      el.onclick = () => navigate(`#/issue/${el.dataset.id}`);
+    });
+  } catch (e) {
+    $('#list').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderIssueCard(i) {
+  const assigneeName = assigneeLabel(i.assignee_type, i.assignee_id);
+  return `
+    <div class="card" data-id="${i.id}" style="cursor:pointer;">
+      <div class="row1">
+        <div class="ident">${escapeHtml(i.identifier)}</div>
+        <div class="title">${escapeHtml(i.title)}</div>
+      </div>
+      <div class="meta">
+        <span class="pill status-${i.status}">${prettyStatus(i.status)}</span>
+        ${i.priority && i.priority !== 'none' ? `<span class="pill priority-${i.priority}">${i.priority}</span>` : ''}
+        ${assigneeName ? `<span>👤 ${escapeHtml(assigneeName)}</span>` : ''}
+        <span style="margin-left:auto;">${fmtDate(i.updated_at)}</span>
+      </div>
+    </div>`;
+}
+
+const STATUSES = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'];
+const prettyStatus = (s) => ({
+  backlog: 'Backlog', todo: 'Todo', in_progress: 'In Progress',
+  in_review: 'In Review', done: 'Done', cancelled: 'Cancelled',
+}[s] || s);
+
+function assigneeLabel(type, id) {
+  if (!type || !id) return null;
+  if (type === 'agent') return state.agentsById[id]?.name || 'agent';
+  if (type === 'member') {
+    const m = state.membersById[id];
+    return m?.name || m?.email || 'member';
+  }
+  return null;
+}
+
+// ===================== Issue detail =====================
+async function viewIssue(app, issueId) {
+  const c = chrome('', { back: true });
+  app.innerHTML = `${c.header}<main><div id="detail"><div class="loading">Loading…</div></div></main>${c.nav}`;
+  try {
+    const [issue, comments] = await Promise.all([
+      api(`/api/issues/${issueId}`),
+      api(`/api/issues/${issueId}/comments`),
+    ]);
+    document.querySelector('header.top h1').textContent = issue.identifier;
+    $('#detail').innerHTML = renderIssueDetail(issue, comments || []);
+    wireIssueDetail(app, issue, comments || []);
+  } catch (e) {
+    $('#detail').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderIssueDetail(i, comments) {
+  const assigneeOptions = buildAssigneeOptions(i.assignee_type, i.assignee_id);
+  return `
+    <h2 style="margin:0 0 8px;font-size:20px;line-height:1.3;word-break:break-word;">${escapeHtml(i.title)}</h2>
+    <div class="row" style="margin-bottom:12px;">
+      <select id="status">
+        ${STATUSES.map(s => `<option value="${s}" ${s===i.status?'selected':''}>${prettyStatus(s)}</option>`).join('')}
+      </select>
+      <select id="assignee">${assigneeOptions}</select>
+    </div>
+    ${i.description ? `<div class="comment"><div class="body">${renderCommentBody(i.description)}</div></div>` : ''}
+
+    <h3 style="font-size:14px;color:var(--muted);margin:20px 0 8px;">Comments (${comments.length})</h3>
+    <div id="comments">${comments.map(renderCommentEl).join('') || '<div class="empty" style="padding:16px;">No comments yet.</div>'}</div>
+
+    <div class="composer" style="margin-top:16px;">
+      <textarea id="composer-text" placeholder="Comment… (type @ to mention an agent or member)"></textarea>
+      <div id="picker"></div>
+      <div class="actions">
+        <button id="send" style="flex:1;">Send</button>
+        <button id="mention-btn" class="ghost icon" title="Mention">@</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderCommentEl(c) {
+  const who = c.author_type === 'agent'
+    ? (state.agentsById[c.author_id]?.name || 'agent')
+    : (state.membersById[c.author_id]?.name || state.membersById[c.author_id]?.email || 'member');
+  return `
+    <div class="comment">
+      <div class="who">
+        <span><strong>${escapeHtml(who)}</strong></span>
+        <span class="badge">${c.author_type}</span>
+        <span style="margin-left:auto;">${fmtDate(c.created_at)}</span>
+      </div>
+      <div class="body">${renderCommentBody(c.content)}</div>
+    </div>`;
+}
+
+function buildAssigneeOptions(curType, curId) {
+  const sel = (t, id) => (curType === t && curId === id) ? 'selected' : '';
+  let html = `<option value="" ${(!curType)?'selected':''}>Unassigned</option>`;
+  if (state.agents.length) {
+    html += `<optgroup label="Agents">`;
+    for (const a of state.agents) html += `<option value="agent:${a.id}" ${sel('agent', a.id)}>${escapeHtml(a.name)}</option>`;
+    html += `</optgroup>`;
+  }
+  if (state.members.length) {
+    html += `<optgroup label="Members">`;
+    for (const m of state.members) {
+      const label = m.name || m.email || m.id;
+      html += `<option value="member:${m.id}" ${sel('member', m.id)}>${escapeHtml(label)}</option>`;
+    }
+    html += `</optgroup>`;
+  }
+  return html;
+}
+
+function wireIssueDetail(app, issue, comments) {
+  // Status change
+  $('#status').onchange = async (e) => {
+    const newStatus = e.target.value;
+    try {
+      await api(`/api/issues/${issue.id}`, { method: 'PUT', body: JSON.stringify({ status: newStatus }) });
+      toast(`Status → ${prettyStatus(newStatus)}`);
+      issue.status = newStatus;
+    } catch (err) {
+      toast(err.message);
+      e.target.value = issue.status;
+    }
+  };
+  // Assignee change
+  $('#assignee').onchange = async (e) => {
+    const v = e.target.value;
+    let body;
+    if (!v) body = { assignee_type: null, assignee_id: null };
+    else { const [t, id] = v.split(':'); body = { assignee_type: t, assignee_id: id }; }
+    try {
+      await api(`/api/issues/${issue.id}`, { method: 'PUT', body: JSON.stringify(body) });
+      toast('Assignee updated');
+      issue.assignee_type = body.assignee_type;
+      issue.assignee_id = body.assignee_id;
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  // Composer + @-mention picker
+  const ta = $('#composer-text');
+  const picker = $('#picker');
+  let mentionStart = -1;
+
+  function closePicker() { picker.innerHTML = ''; mentionStart = -1; }
+  function openPicker(query, atIndex) {
+    mentionStart = atIndex;
+    const q = (query || '').toLowerCase();
+    const results = [];
+    // Special "all"
+    if ('all'.startsWith(q)) results.push({ type: 'all', id: 'all', name: 'All', sub: 'everyone' });
+    for (const a of state.agents) {
+      if (!q || a.name.toLowerCase().includes(q)) results.push({ type: 'agent', id: a.id, name: a.name, sub: 'agent' });
+    }
+    for (const m of state.members) {
+      const label = m.name || m.email || '';
+      if (!q || label.toLowerCase().includes(q)) results.push({ type: 'member', id: m.id, name: label || 'member', sub: 'member' });
+    }
+    if (!results.length) { closePicker(); return; }
+    picker.innerHTML = `<div class="mention-picker">${results.slice(0, 8).map((r, i) => `
+      <div class="item ${i===0?'active':''}" data-type="${r.type}" data-id="${r.id}" data-name="${escapeHtml(r.name)}">
+        <div style="flex:1;"><strong>${escapeHtml(r.name)}</strong></div>
+        <span class="badge">${r.sub}</span>
+      </div>`).join('')}</div>`;
+    $$('.mention-picker .item').forEach(el => el.onclick = () => insertMention(el.dataset.type, el.dataset.id, el.dataset.name));
+  }
+  function insertMention(type, id, name) {
+    const v = ta.value;
+    if (mentionStart < 0) { closePicker(); return; }
+    const before = v.slice(0, mentionStart);
+    const after = v.slice(ta.selectionStart);
+    const link = `[@${name}](mention://${type}/${id})`;
+    ta.value = before + link + ' ' + after;
+    const newPos = (before + link + ' ').length;
+    ta.focus();
+    ta.setSelectionRange(newPos, newPos);
+    closePicker();
+  }
+  ta.addEventListener('input', () => {
+    const pos = ta.selectionStart;
+    const before = ta.value.slice(0, pos);
+    const m = before.match(/(?:^|\s)@(\S*)$/);
+    if (m) {
+      const atIndex = pos - m[1].length - 1;
+      openPicker(m[1], atIndex);
+    } else {
+      closePicker();
+    }
+  });
+  $('#mention-btn').onclick = () => {
+    const pos = ta.selectionStart || ta.value.length;
+    ta.value = ta.value.slice(0, pos) + '@' + ta.value.slice(pos);
+    ta.focus();
+    ta.setSelectionRange(pos + 1, pos + 1);
+    openPicker('', pos);
+  };
+  $('#send').onclick = async () => {
+    const content = ta.value.trim();
+    if (!content) return;
+    $('#send').disabled = true;
+    try {
+      await api(`/api/issues/${issue.id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content, type: 'comment' }),
+      });
+      ta.value = '';
+      closePicker();
+      // Re-fetch comments
+      const fresh = await api(`/api/issues/${issue.id}/comments`);
+      $('#comments').innerHTML = fresh.map(renderCommentEl).join('');
+      toast('Sent');
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      $('#send').disabled = false;
+    }
+  };
+}
+
+// ===================== New Issue =====================
+async function viewNewIssue(app) {
+  const c = chrome('New Issue', { back: true });
+  const assigneeOptions = buildAssigneeOptions(null, null);
+  app.innerHTML = `${c.header}<main>
+    <div class="field"><label>Title</label><input id="title" placeholder="What needs to happen?" autofocus></div>
+    <div class="field"><label>Description</label><textarea id="desc" rows="4" placeholder="Optional"></textarea></div>
+    <div class="row">
+      <div class="field"><label>Status</label><select id="status">${STATUSES.map(s => `<option value="${s}" ${s==='todo'?'selected':''}>${prettyStatus(s)}</option>`).join('')}</select></div>
+      <div class="field"><label>Priority</label><select id="priority">
+        <option value="none" selected>None</option>
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+        <option value="urgent">Urgent</option>
+      </select></div>
+    </div>
+    <div class="field"><label>Assignee</label><select id="assignee">${assigneeOptions}</select></div>
+    <button id="create" style="width:100%;">Create</button>
+  </main>${c.nav}`;
+  $('#create').onclick = async () => {
+    const title = $('#title').value.trim();
+    if (!title) return toast('Title required');
+    const v = $('#assignee').value;
+    const body = {
+      title,
+      description: $('#desc').value || null,
+      status: $('#status').value,
+      priority: $('#priority').value,
+    };
+    if (v) { const [t, id] = v.split(':'); body.assignee_type = t; body.assignee_id = id; }
+    $('#create').disabled = true;
+    try {
+      const issue = await api('/api/issues', { method: 'POST', body: JSON.stringify(body) });
+      navigate(`#/issue/${issue.id}`);
+    } catch (e) {
+      toast(e.message);
+      $('#create').disabled = false;
+    }
+  };
+}
+
+// ===================== Settings =====================
+async function viewSettings(app) {
+  const c = chrome('Settings');
+  app.innerHTML = `${c.header}<main>
+    <div class="card" style="margin-bottom:12px;">
+      <div class="meta" style="margin:0;"><span>Workspace</span></div>
+      <div class="title">${escapeHtml(state.workspace?.name || '')}</div>
+      <div class="meta"><span>${escapeHtml(state.workspace?.slug || '')}</span></div>
+      <button id="switch-ws" class="ghost" style="margin-top:12px;">Switch workspace</button>
+    </div>
+    <div class="card" style="margin-bottom:12px;">
+      <div class="meta" style="margin:0;"><span>Signed in</span></div>
+      <div class="title">${escapeHtml(state.me?.email || '...')}</div>
+      <button id="logout" class="danger" style="margin-top:12px;">Sign out (clear PAT)</button>
+    </div>
+    <div class="card">
+      <div class="meta" style="margin:0;"><span>API base</span></div>
+      <div class="title" style="font-size:14px;word-break:break-all;">${escapeHtml(apiBase())}</div>
+      <button id="reload-data" class="ghost" style="margin-top:12px;">Reload agents/members</button>
+    </div>
+  </main>${c.nav}`;
+  $('#switch-ws').onclick = () => {
+    localStorage.removeItem(LS.ws);
+    state.workspace = null;
+    render();
+  };
+  $('#logout').onclick = () => {
+    if (!confirm('Sign out and clear PAT?')) return;
+    localStorage.removeItem(LS.pat);
+    localStorage.removeItem(LS.ws);
+    state.workspace = null;
+    state.me = null;
+    render();
+  };
+  $('#reload-data').onclick = async () => {
+    state.agents = []; state.members = [];
+    try { await loadWorkspaceData(); toast('Reloaded'); } catch (e) { toast(e.message); }
+  };
+}
+
+// ===================== Boot =====================
+(async () => {
+  if (localStorage.getItem(LS.pat)) {
+    try { state.me = await api('/api/me'); }
+    catch (e) {
+      // keep PAT — server might be temporarily unavailable
+      console.warn('me failed:', e.message);
+    }
+  }
+  render();
+})();
+</script>
+</body>
+</html>
