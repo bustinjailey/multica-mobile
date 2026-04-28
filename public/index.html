@@ -255,7 +255,18 @@ const LS = {
   pat: 'mm.pat',
   ws: 'mm.workspace',     // {id, slug, name, issuePrefix}
   base: 'mm.api_base',    // override for non-default origin
+  pushOn: 'mm.push.on',   // '1' if push subscription is intended (re-subscribe on each load)
+  inboxFilter: 'mm.inbox.filter', // 'important' | 'all' (default: important)
 };
+
+// Inbox event types considered noise when the user picks 'Important' filter.
+// status_changed dominates inbox volume (e.g. moved-to-done) and rarely needs
+// a tap; reaction_added is single-step ack.
+const INBOX_NOISE_TYPES = new Set(['status_changed', 'reaction_added']);
+
+// Path of the push relay on the same origin (Caddy proxies /m/push/* to the
+// multica-mobile-push service on LXC 122).
+const pushBase = () => `${apiBase()}/m/push`;
 
 // API base: same-origin by default, but allow override (so this file can be
 // opened locally during development).
@@ -684,12 +695,27 @@ async function workspacePicker(app) {
 
 // ===================== Inbox =====================
 async function viewInbox(app) {
-  const c = chrome('Inbox', { right: `<button class="icon ghost" onclick="location.reload()">↻</button>` });
+  const filter = localStorage.getItem(LS.inboxFilter) || 'important';
+  const filterCtl = `<select id="ib-filter" style="width:auto;min-height:36px;padding:6px 8px;font-size:13px;margin-right:6px;">
+    <option value="important" ${filter==='important'?'selected':''}>Important</option>
+    <option value="all" ${filter==='all'?'selected':''}>All</option>
+  </select>`;
+  const c = chrome('Inbox', { right: `${filterCtl}<button class="icon ghost" onclick="location.reload()">↻</button>` });
   app.innerHTML = `${c.header}<main><div id="list" class="list"><div class="loading">Loading…</div></div></main>${c.nav}`;
+  $('#ib-filter').onchange = (e) => { localStorage.setItem(LS.inboxFilter, e.target.value); viewInbox(app); };
   try {
     const items = await api('/api/inbox');
-    if (!items?.length) { $('#list').innerHTML = `<div class="empty">Nothing in your inbox.</div>`; return; }
-    $('#list').innerHTML = items.map(renderInboxItem).join('');
+    const visible = filter === 'important'
+      ? (items || []).filter(it => !INBOX_NOISE_TYPES.has(it.type))
+      : (items || []);
+    if (!visible.length) {
+      const note = filter === 'important' && items?.length
+        ? `Nothing important. <a href="#" onclick="event.preventDefault();localStorage.setItem('${LS.inboxFilter}','all');viewInbox(document.getElementById('app'));return false;">Show all (${items.length})</a>`
+        : 'Nothing in your inbox.';
+      $('#list').innerHTML = `<div class="empty">${note}</div>`;
+      return;
+    }
+    $('#list').innerHTML = visible.map(renderInboxItem).join('');
     $$('#list .card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.archive-btn')) return;
@@ -1444,12 +1470,32 @@ async function viewNewIssue(app) {
 // ===================== Settings =====================
 async function viewSettings(app) {
   const c = chrome('Settings');
+  const pushSupported = await pushIsAvailable();
+  const pushPerm = ('Notification' in window) ? Notification.permission : 'unsupported';
+  const pushOn = localStorage.getItem(LS.pushOn) === '1' && pushPerm === 'granted';
+  const pushBlurb = !pushSupported
+    ? 'Push not supported in this browser (HTTPS + service worker required).'
+    : pushPerm === 'denied'
+      ? 'Permission was denied. Enable it in your browser site settings, then come back.'
+      : pushOn
+        ? 'Notifications are on for this device.'
+        : 'Get pushes for new inbox items, mentions, assignments, and blocked-status changes.';
+
   app.innerHTML = `${c.header}<main>
     <div class="card" style="margin-bottom:12px;">
       <div class="meta" style="margin:0;"><span>Workspace</span></div>
       <div class="title">${escapeHtml(state.workspace?.name || '')}</div>
       <div class="meta"><span>${escapeHtml(state.workspace?.slug || '')}</span></div>
       <button id="switch-ws" class="ghost" style="margin-top:12px;">Switch workspace</button>
+    </div>
+    <div class="card" style="margin-bottom:12px;">
+      <div class="meta" style="margin:0;"><span>Notifications</span></div>
+      <div style="font-size:13px;color:var(--muted);margin:6px 0 12px;">${escapeHtml(pushBlurb)}</div>
+      ${pushSupported && pushPerm !== 'denied' ? `
+        <div class="row">
+          <button id="push-toggle">${pushOn ? 'Disable' : 'Enable'}</button>
+          ${pushOn ? `<button id="push-test" class="ghost">Send test</button>` : ''}
+        </div>` : ''}
     </div>
     <div class="card" style="margin-bottom:12px;">
       <div class="meta" style="margin:0;"><span>Signed in</span></div>
@@ -1462,6 +1508,31 @@ async function viewSettings(app) {
       <button id="reload-data" class="ghost" style="margin-top:12px;">Reload agents/members</button>
     </div>
   </main>${c.nav}`;
+
+  if ($('#push-toggle')) {
+    $('#push-toggle').onclick = async () => {
+      $('#push-toggle').disabled = true;
+      try {
+        if (pushOn) {
+          await pushUnsubscribe();
+          toast('Notifications disabled');
+        } else {
+          await pushSubscribe();
+          toast('Notifications enabled');
+        }
+        viewSettings(app);
+      } catch (e) {
+        toast(e.message);
+        $('#push-toggle').disabled = false;
+      }
+    };
+  }
+  if ($('#push-test')) {
+    $('#push-test').onclick = async () => {
+      try { await pushSendTest(); toast('Test sent'); }
+      catch (e) { toast(e.message); }
+    };
+  }
   $('#switch-ws').onclick = () => {
     localStorage.removeItem(LS.ws);
     state.workspace = null;
@@ -1479,6 +1550,130 @@ async function viewSettings(app) {
     state.agents = []; state.members = [];
     try { await loadWorkspaceData(); toast('Reloaded'); } catch (e) { toast(e.message); }
   };
+}
+
+// ===================== Push notifications =====================
+// Subscribes the device to Web Push via the multica-mobile-push relay.
+// Persists 'intended state' in localStorage so reload re-subscribes silently
+// without a permission prompt when the user has already granted it.
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function ensureServiceWorker() {
+  if (!('serviceWorker' in navigator)) throw new Error('service workers not supported');
+  // sw.js is at /m/sw.js, scope /m/ — covers the PWA.
+  return navigator.serviceWorker.register('sw.js', { scope: './' });
+}
+
+async function pushIsAvailable() {
+  return 'serviceWorker' in navigator
+    && 'PushManager' in window
+    && location.protocol === 'https:';
+}
+
+async function pushSubscribe() {
+  const reg = await ensureServiceWorker();
+  await navigator.serviceWorker.ready;
+  // Permission prompt only fires the first time.
+  if (Notification.permission === 'default') {
+    const p = await Notification.requestPermission();
+    if (p !== 'granted') throw new Error('notifications denied');
+  }
+  if (Notification.permission !== 'granted') throw new Error('notifications denied');
+
+  const vapidKey = await fetch(`${pushBase()}/vapid-public-key`).then(r => r.text());
+  if (!vapidKey) throw new Error('relay returned empty VAPID key');
+
+  let sub = await reg.pushManager.getSubscription();
+  if (sub) {
+    // If the existing sub uses a different VAPID key (rotated server-side),
+    // unsubscribe and re-subscribe with the new key.
+    const cur = sub.options?.applicationServerKey;
+    if (cur) {
+      const curB64 = btoa(String.fromCharCode(...new Uint8Array(cur)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      if (curB64 !== vapidKey) {
+        await sub.unsubscribe();
+        sub = null;
+      }
+    }
+  }
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey),
+    });
+  }
+  // Register with the relay (idempotent — replaces existing record by endpoint hash).
+  const r = await fetch(`${pushBase()}/subscribe`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${localStorage.getItem(LS.pat) || ''}`,
+    },
+    body: JSON.stringify({
+      endpoint: sub.endpoint,
+      keys: sub.toJSON().keys,
+      user_agent: navigator.userAgent,
+    }),
+  });
+  if (!r.ok) throw new Error(`relay /subscribe ${r.status}`);
+  localStorage.setItem(LS.pushOn, '1');
+}
+
+async function pushUnsubscribe() {
+  if (!('serviceWorker' in navigator)) return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) { localStorage.removeItem(LS.pushOn); return; }
+  const sub = await reg.pushManager.getSubscription();
+  if (sub) {
+    await fetch(`${pushBase()}/subscribe`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem(LS.pat) || ''}`,
+      },
+      body: JSON.stringify({ endpoint: sub.endpoint }),
+    }).catch(() => {});
+    await sub.unsubscribe().catch(() => {});
+  }
+  localStorage.removeItem(LS.pushOn);
+}
+
+async function pushSendTest() {
+  const r = await fetch(`${pushBase()}/test`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${localStorage.getItem(LS.pat) || ''}` },
+  });
+  if (!r.ok) throw new Error(`test failed: ${r.status}`);
+  return r.json();
+}
+
+// Re-subscribe silently on every load if the user previously enabled it.
+// Browsers can drop subscriptions on quota pressure or after server VAPID
+// rotation, so calling subscribe() each session keeps things healthy.
+async function pushBootIfEnabled() {
+  if (!await pushIsAvailable()) return;
+  if (localStorage.getItem(LS.pushOn) !== '1') return;
+  if (Notification.permission !== 'granted') return;
+  try { await pushSubscribe(); }
+  catch (e) { console.warn('[push] silent re-sub failed:', e.message); }
+}
+
+// Service worker can ask the page to navigate after a notification click.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type === 'navigate' && e.data.url) {
+      location.hash = e.data.url.replace(/^.*#/, '#');
+    }
+  });
 }
 
 // ===================== Visual viewport tracking =====================
@@ -1509,6 +1704,9 @@ function trackVisualViewport() {
     }
   }
   render();
+  // Re-subscribe silently if push was previously enabled. Runs after render so
+  // the first paint isn't blocked by the SW registration network round-trip.
+  pushBootIfEnabled().catch(e => console.warn('[push boot]', e));
 })();
 </script>
 </body>
