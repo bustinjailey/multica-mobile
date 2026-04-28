@@ -1248,25 +1248,8 @@ function wireIssueLive(app, issue) {
         const v = fresh.assignee_type && fresh.assignee_id ? `${fresh.assignee_type}:${fresh.assignee_id}` : '';
         if (assigneeSel.value !== v) assigneeSel.value = v;
       }
-      // approve-bar may need refresh if reactions changed
-      const bar = document.getElementById('approve-bar');
-      if (bar) { bar.innerHTML = renderApprovalBar(fresh); wireApproveBar(fresh); }
     } catch (e) { /* ignore */ }
   }));
-
-  // Issue reactions (separate event channel)
-  ['issue_reaction:added', 'issue_reaction:removed'].forEach(t =>
-    state.viewSubs.push(bus.on(t, async (payload) => {
-      const rIssueId = payload?.issue_id || payload?.reaction?.issue_id;
-      if (rIssueId && rIssueId !== issueId) return;
-      try {
-        const fresh = await api(`/api/issues/${issueId}`);
-        Object.assign(issue, fresh);
-        const bar = document.getElementById('approve-bar');
-        if (bar) { bar.innerHTML = renderApprovalBar(fresh); wireApproveBar(fresh); }
-      } catch (e) { /* ignore */ }
-    }))
-  );
 
   // Catch-up refresh: WS events get dropped while the PWA is backgrounded,
   // and the server doesn't replay on reconnect. Re-fetch the timeline + the
@@ -1322,7 +1305,6 @@ function renderIssueDetail(i, timeline) {
     </div>
     <div id="active-banner">${renderActiveBanner(i.id)}</div>
     <div id="activity-log">${renderActivityLog(i.id)}</div>
-    <div id="approve-bar">${renderApprovalBar(i)}</div>
     ${commentCount > 1 ? `<button id="jump-latest" class="ghost" style="width:100%;margin-bottom:12px;font-size:13px;">↓ Jump to latest activity</button>` : ''}
     ${i.description ? `<div class="comment"><div class="body">${renderCommentBody(i.description)}</div></div>` : ''}
 
@@ -1410,58 +1392,6 @@ function renderTimelineEntry(t) {
   return '';
 }
 
-// +1 / approve button — uses the Multica reaction API. Mirrors the architect →
-// executor handoff convention where bustinjailey leaves a thumbs-up to release
-// the executor. Reactions from a PAT call resolve to (member, userID), so we
-// detect "did I already react" by matching r.actor_type==='member' && r.actor_id===me.id.
-const APPROVAL_EMOJI = '👍';
-function myApproval(issue) {
-  return (issue.reactions || []).find(r =>
-    r.emoji === APPROVAL_EMOJI && r.actor_type === 'member' && r.actor_id === state.me?.id
-  );
-}
-function renderApprovalBar(issue) {
-  const reacted = !!myApproval(issue);
-  const total = (issue.reactions || []).filter(r => r.emoji === APPROVAL_EMOJI).length;
-  const countSuffix = total > 0 ? ` (${total})` : '';
-  const label = reacted
-    ? `✓ +1'd${countSuffix} — tap to undo`
-    : `👍 +1 / Approve${countSuffix}`;
-  const cls = reacted ? 'ghost' : '';
-  return `<button id="approve-btn" class="${cls}" style="width:100%;margin-bottom:12px;">${label}</button>`;
-}
-function wireApproveBar(issue) {
-  const bar = document.getElementById('approve-bar');
-  const btn = document.getElementById('approve-btn');
-  if (!btn || !bar) return;
-  btn.onclick = async () => {
-    btn.disabled = true;
-    const existing = myApproval(issue);
-    try {
-      if (existing) {
-        await api(`/api/issues/${issue.id}/reactions`, {
-          method: 'DELETE',
-          body: JSON.stringify({ emoji: APPROVAL_EMOJI }),
-        });
-        issue.reactions = (issue.reactions || []).filter(r => r !== existing);
-        toast('Removed +1');
-      } else {
-        const r = await api(`/api/issues/${issue.id}/reactions`, {
-          method: 'POST',
-          body: JSON.stringify({ emoji: APPROVAL_EMOJI }),
-        });
-        issue.reactions = [...(issue.reactions || []), r];
-        toast('Approved');
-      }
-      bar.innerHTML = renderApprovalBar(issue);
-      wireApproveBar(issue);
-    } catch (e) {
-      toast(e.message);
-      btn.disabled = false;
-    }
-  };
-}
-
 function renderCommentEl(c) {
   const who = c.author_type === 'agent'
     ? (state.agentsById[c.author_id]?.name || 'agent')
@@ -1498,7 +1428,6 @@ function buildAssigneeOptions(curType, curId) {
 }
 
 function wireIssueDetail(app, issue, timeline) {
-  wireApproveBar(issue);
   // Jump-to-latest button: scroll the last activity entry into view.
   const jumpBtn = document.getElementById('jump-latest');
   if (jumpBtn) {
