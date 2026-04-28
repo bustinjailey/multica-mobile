@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#111827">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -25,6 +25,7 @@
     --success: #10b981;
     --safe-top: env(safe-area-inset-top);
     --safe-bottom: env(safe-area-inset-bottom);
+    --vv-bottom: 0px;
   }
   @media (prefers-color-scheme: light) {
     :root {
@@ -74,7 +75,11 @@
   a { color: var(--accent-2); }
 
   /* Layout */
-  #app { padding-bottom: calc(72px + var(--safe-bottom)); min-height: 100dvh; }
+  /* svh, not dvh: assume the URL bar / chrome is always visible so content
+     doesn't get hidden when it slides in. Bottom nav offset is also tracked
+     against the visualViewport (see Boot section) so it survives a Chrome-
+     bottom-address-bar overlap. */
+  #app { padding-bottom: calc(72px + var(--safe-bottom)); min-height: 100svh; }
   header.top {
     position: sticky; top: 0; z-index: 10;
     background: var(--surface);
@@ -86,7 +91,10 @@
   header.top .back { background: transparent; padding: 8px; min-height: 0; color: var(--text); }
   main { padding: 12px 16px; }
   nav.bottom {
-    position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+    position: fixed; left: 0; right: 0; z-index: 10;
+    /* bottom = max(safe-area-inset, dynamic visual-viewport overlap from
+       browser chrome). Recalculated by trackVisualViewport(). */
+    bottom: var(--vv-bottom);
     background: var(--surface);
     border-top: 1px solid var(--border);
     display: grid; grid-template-columns: repeat(4, 1fr);
@@ -124,6 +132,7 @@
   .pill.status-todo { color: #94a3b8; }
   .pill.status-in_progress { color: #fbbf24; border-color: #92400e; }
   .pill.status-in_review { color: #c084fc; border-color: #6b21a8; }
+  .pill.status-blocked { color: #f87171; border-color: #991b1b; }
   .pill.status-done { color: #34d399; border-color: #065f46; }
   .pill.status-cancelled { color: var(--muted); text-decoration: line-through; }
   .pill.priority-urgent { color: var(--danger); border-color: var(--danger); }
@@ -740,15 +749,17 @@ const SCOPE_OPTIONS = [
   ['mine', 'Mine'],
   ['all', 'All'],
 ];
+// Real status enum on the server. The 'any' meta means no status filter at all
+// — kept so users can see everything in one shot — but no other meta values.
 const STATUS_OPTIONS = [
-  ['open', 'Open'],
   ['in_review', 'In Review'],
   ['in_progress', 'In Progress'],
+  ['blocked', 'Blocked'],
   ['todo', 'Todo'],
   ['backlog', 'Backlog'],
   ['done', 'Done'],
   ['cancelled', 'Cancelled'],
-  ['any', 'Any status'],
+  ['any', 'All statuses'],
 ];
 function readFilter() {
   return {
@@ -767,6 +778,8 @@ function buildIssueQuery(filter) {
     params.set('assignee_type', 'member');
     params.set('assignee_id', state.me.id);
   }
+  // 'any' → no status filter. 'open' is a legacy sessionStorage value some
+  // tabs may still carry from before; map to open_only to stay graceful.
   if (filter.status === 'open') params.set('open_only', 'true');
   else if (filter.status !== 'any') params.set('status', filter.status);
   return params;
@@ -852,10 +865,10 @@ function renderIssueCard(i) {
     </div>`;
 }
 
-const STATUSES = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'];
+const STATUSES = ['backlog', 'todo', 'in_progress', 'in_review', 'blocked', 'done', 'cancelled'];
 const prettyStatus = (s) => ({
   backlog: 'Backlog', todo: 'Todo', in_progress: 'In Progress',
-  in_review: 'In Review', done: 'Done', cancelled: 'Cancelled',
+  in_review: 'In Review', blocked: 'Blocked', done: 'Done', cancelled: 'Cancelled',
 }[s] || s);
 
 function assigneeLabel(type, id) {
@@ -1468,8 +1481,26 @@ async function viewSettings(app) {
   };
 }
 
+// ===================== Visual viewport tracking =====================
+// Mobile Chrome (especially with the address bar pinned to the bottom) overlaps
+// position:fixed elements at the bottom of the viewport. The Visual Viewport
+// API reports the actual visible region; we bind the bottom nav's offset to it
+// so the nav slides up out from under the URL bar / on-screen keyboard.
+function trackVisualViewport() {
+  if (!window.visualViewport) return;
+  const apply = () => {
+    const vv = window.visualViewport;
+    const offset = window.innerHeight - vv.height - vv.offsetTop;
+    document.documentElement.style.setProperty('--vv-bottom', `${Math.max(0, offset)}px`);
+  };
+  apply();
+  window.visualViewport.addEventListener('resize', apply);
+  window.visualViewport.addEventListener('scroll', apply);
+}
+
 // ===================== Boot =====================
 (async () => {
+  trackVisualViewport();
   if (localStorage.getItem(LS.pat)) {
     try { state.me = await api('/api/me'); }
     catch (e) {
