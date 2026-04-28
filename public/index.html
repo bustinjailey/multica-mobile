@@ -264,6 +264,20 @@ const LS = {
 // a tap; reaction_added is single-step ack.
 const INBOX_NOISE_TYPES = new Set(['status_changed', 'reaction_added']);
 
+// Inbox sort priority by issue status. in_review surfaces approvals (highest
+// action density); done/cancelled sink because they're informational.
+// Items without a status (workspace-level notifications) get a middle weight.
+const INBOX_STATUS_PRIORITY = {
+  in_review: 100,
+  blocked: 90,
+  in_progress: 80,
+  todo: 70,
+  backlog: 60,
+  cancelled: 20,
+  done: 10,
+};
+const inboxStatusWeight = (s) => INBOX_STATUS_PRIORITY[s] ?? 50;
+
 // Path of the push relay on the same origin (Caddy proxies /m/push/* to the
 // multica-mobile-push service on LXC 122).
 const pushBase = () => `${apiBase()}/m/push`;
@@ -712,21 +726,29 @@ async function viewInbox(app) {
     // an issue_id (workspace-level notifications) pass through. Filter runs
     // BEFORE dedupe so 'Important' surfaces the latest important item even
     // when a status_changed is technically newer.
-    const sorted = filtered.slice().sort((a, b) =>
+    const sortedByTime = filtered.slice().sort((a, b) =>
       (b.created_at || '').localeCompare(a.created_at || '')
     );
     const perIssueExtra = new Map(); // issue_id → count of additional items hidden
     const seen = new Set();
-    const visible = [];
-    for (const it of sorted) {
-      if (!it.issue_id) { visible.push(it); continue; }
+    const deduped = [];
+    for (const it of sortedByTime) {
+      if (!it.issue_id) { deduped.push(it); continue; }
       if (seen.has(it.issue_id)) {
         perIssueExtra.set(it.issue_id, (perIssueExtra.get(it.issue_id) || 0) + 1);
         continue;
       }
       seen.add(it.issue_id);
-      visible.push(it);
+      deduped.push(it);
     }
+    // Final order: by status priority desc (in_review on top, done at bottom),
+    // newest-first as the tiebreaker. Items without a status sit in the middle.
+    const visible = deduped.slice().sort((a, b) => {
+      const wa = inboxStatusWeight(a.issue_status);
+      const wb = inboxStatusWeight(b.issue_status);
+      if (wa !== wb) return wb - wa;
+      return (b.created_at || '').localeCompare(a.created_at || '');
+    });
     if (!visible.length) {
       const note = filter === 'important' && items?.length
         ? `Nothing important. <a href="#" onclick="event.preventDefault();localStorage.setItem('${LS.inboxFilter}','all');viewInbox(document.getElementById('app'));return false;">Show all (${items.length})</a>`
