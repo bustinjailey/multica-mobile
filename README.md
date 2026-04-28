@@ -2,6 +2,8 @@
 
 Tiny mobile-friendly PWA for [Multica](https://github.com/multica-ai/multica). Talks directly to the Multica HTTP API using a Personal Access Token. Single static HTML file, no build step.
 
+Live at **https://multica.bustinjailey.org/m/** on this self-hosted instance.
+
 ## Features
 
 - 📥 Inbox with unread badge
@@ -17,46 +19,59 @@ The app is a single static HTML file in `public/` that calls the Multica REST AP
 
 Mention syntax follows Multica's wire format: `[@Name](mention://agent/<uuid>)` for agents, `mention://member/<uuid>` for members, `mention://all/all` for everyone. Mentioning an agent in a top-level comment automatically enqueues a task for that agent.
 
-## Deploy
+## Deploy (this Multica instance)
 
-The app is intended to live at `https://multica.bustinjailey.org/m/`, served by the existing Caddy that fronts the Multica server.
+Deployment is fully automatic via `caddy-sync.sh` running on each Caddy node:
 
-1. **Copy static files into LXC 102 (`caddy-primary`)**:
+- **caddy-primary** (LXC 102 on eagle) and **caddy-secondary** (LXC 150 on proxmox) run a periodic sync that fast-forwards `/etc/caddy/multica-mobile/` from this repo's `main` branch.
+- Caddy serves the contents of `/etc/caddy/multica-mobile/public` at `https://multica.bustinjailey.org/m/` via the `multica.bustinjailey.org` block in `bustinjailey/bustinlab-infra` (`caddy/Caddyfile`).
 
-   ```sh
-   # From eagle:
-   pct exec 102 -- mkdir -p /var/www/multica-mobile
-   pct push 102 public/index.html /var/www/multica-mobile/index.html
-   pct push 102 public/manifest.webmanifest /var/www/multica-mobile/manifest.webmanifest
-   # icon files when you add them:
-   # pct push 102 public/icon-192.png /var/www/multica-mobile/icon-192.png
-   # pct push 102 public/icon-512.png /var/www/multica-mobile/icon-512.png
-   ```
+To ship a change:
 
-   For repeat deploys, prefer `git clone` + `git pull` inside LXC 102 (e.g. into `/opt/multica-mobile/`) and point Caddy's root at `/opt/multica-mobile/public`.
+1. Edit `public/index.html`
+2. Commit + push to `main`
+3. The next `caddy-sync.sh` run on each Caddy node fast-forwards the checkout. No reload needed (Caddy reads files at request time).
 
-2. **Add the Caddy snippet** from `deploy/Caddyfile.snippet` to the existing `multica.bustinjailey.org` block in `/etc/caddy/Caddyfile` (must come before the catch-all `handle { ... }` for Next.js).
+To trigger immediately:
 
-3. **Validate and reload**:
+```sh
+ssh root@eagle.bustinjailey.org "pct exec 102 -- bash /etc/caddy/infra/caddy/caddy-sync.sh"
+ssh root@proxmox.bustinjailey.org "pct exec 150 -- bash /etc/caddy/infra/caddy/caddy-sync.sh"
+```
 
-   ```sh
-   caddy validate --config /etc/caddy/Caddyfile
-   systemctl reload caddy
-   ```
+## First-time use
 
-4. **First-time use**:
-   - Open `https://multica.bustinjailey.org/m/` on your phone.
-   - In the Multica web app on a desktop, create a Personal Access Token (Settings → Personal Access Tokens).
-   - Paste the token into the mobile app, choose your workspace.
-   - Tap the share icon in Safari/Chrome and "Add to Home Screen" for the PWA experience.
+1. Open `https://multica.bustinjailey.org/m/` on your phone
+2. In the Multica web app on a desktop, create a Personal Access Token (Settings → Personal Access Tokens)
+3. Paste the token into the mobile app's setup screen and choose your workspace
+4. In Safari/Chrome, tap the share icon and "Add to Home Screen" for the PWA experience
+
+## Deploy on a different Multica instance
+
+The app is same-origin: serve `public/index.html` from any path on the same hostname as your Multica server (so the relative API calls hit `/api/*` correctly). Example Caddy snippet:
+
+```caddy
+your-multica.example.com {
+    handle /api/*   { reverse_proxy multica-backend:8080 }
+    handle /ws      { reverse_proxy multica-backend:8080 }
+
+    @m_bare path /m
+    redir @m_bare /m/ 308
+    handle_path /m/* {
+        root * /path/to/multica-mobile/public
+        file_server
+        try_files {path} /index.html
+    }
+
+    handle           { reverse_proxy multica-frontend:3000 }
+}
+```
+
+If you want to host the PWA on a *different* origin, the Multica backend's `CORS_ALLOWED_ORIGINS` env must include that origin.
 
 ## Notes / limitations (V1)
 
 - No realtime updates — the app refreshes the inbox on focus. WebSocket support could be added later (the server's `/ws` accepts the same PAT).
-- Status enum is hard-coded to `backlog | todo | in_progress | in_review | done | cancelled` — matches `server/internal/handler/issue.go` as of 2026-04-27. If Multica adds new statuses, update `STATUSES` in `index.html`.
+- Status enum is hard-coded to `backlog | todo | in_progress | in_review | done | cancelled`. If Multica adds new statuses, update `STATUSES` in `index.html`.
 - Assignee dropdown lists agents and members fetched at app startup. "Reload agents/members" in Settings forces a refresh.
-- Inbox endpoint shape is best-guess based on the router; the renderer is defensive about missing fields. Adjust `renderInboxItem` if the upstream payload diverges.
-
-## Updating
-
-Edit `public/index.html`, commit, push, then re-run the deploy step on LXC 102.
+- Icon files (`icon-192.png`, `icon-512.png`) are referenced by the PWA manifest but not yet generated; "Add to Home Screen" will fall back to a generic icon.
