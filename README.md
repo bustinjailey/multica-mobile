@@ -2,8 +2,6 @@
 
 Tiny mobile-friendly PWA for [Multica](https://github.com/multica-ai/multica). Talks directly to the Multica HTTP API using a Personal Access Token. Single static HTML file, no build step.
 
-Live at **https://multica.bustinjailey.org/m/** on this self-hosted instance.
-
 ## Features
 
 - 📥 Inbox with unread badge
@@ -19,34 +17,7 @@ The app is a single static HTML file in `public/` that calls the Multica REST AP
 
 Mention syntax follows Multica's wire format: `[@Name](mention://agent/<uuid>)` for agents, `mention://member/<uuid>` for members, `mention://all/all` for everyone. Mentioning an agent in a top-level comment automatically enqueues a task for that agent.
 
-## Deploy (this Multica instance)
-
-Deployment is fully automatic via `caddy-sync.sh` running on each Caddy node:
-
-- **caddy-primary** (LXC 102 on eagle) and **caddy-secondary** (LXC 150 on proxmox) run a periodic sync that fast-forwards `/etc/caddy/multica-mobile/` from this repo's `main` branch.
-- Caddy serves the contents of `/etc/caddy/multica-mobile/public` at `https://multica.bustinjailey.org/m/` via the `multica.bustinjailey.org` block in `bustinjailey/bustinlab-infra` (`caddy/Caddyfile`).
-
-To ship a change:
-
-1. Edit `public/index.html`
-2. Commit + push to `main`
-3. The next `caddy-sync.sh` run on each Caddy node fast-forwards the checkout. No reload needed (Caddy reads files at request time).
-
-To trigger immediately:
-
-```sh
-ssh root@eagle.bustinjailey.org "pct exec 102 -- bash /etc/caddy/infra/caddy/caddy-sync.sh"
-ssh root@proxmox.bustinjailey.org "pct exec 150 -- bash /etc/caddy/infra/caddy/caddy-sync.sh"
-```
-
-## First-time use
-
-1. Open `https://multica.bustinjailey.org/m/` on your phone
-2. In the Multica web app on a desktop, create a Personal Access Token (Settings → Personal Access Tokens)
-3. Paste the token into the mobile app's setup screen and choose your workspace
-4. In Safari/Chrome, tap the share icon and "Add to Home Screen" for the PWA experience
-
-## Deploy on a different Multica instance
+## Deploy
 
 The app is same-origin: serve `public/index.html` from any path on the same hostname as your Multica server (so the relative API calls hit `/api/*` correctly). Example Caddy snippet:
 
@@ -68,6 +39,15 @@ your-multica.example.com {
 ```
 
 If you want to host the PWA on a *different* origin, the Multica backend's `CORS_ALLOWED_ORIGINS` env must include that origin.
+
+To ship a change, edit `public/index.html`, commit and push. Caddy reads files at request time, so a fresh checkout on the serving host is all that's needed (no reload).
+
+## First-time use
+
+1. Open the deployed URL on your phone (e.g. `https://your-multica.example.com/m/`)
+2. In the Multica web app on a desktop, create a Personal Access Token (Settings → Personal Access Tokens)
+3. Paste the token into the mobile app's setup screen and choose your workspace
+4. In Safari/Chrome, tap the share icon and "Add to Home Screen" for the PWA experience
 
 ## Notes / limitations (V1)
 

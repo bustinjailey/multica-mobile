@@ -5,7 +5,7 @@
 //   1. Receive Web Push events and show OS-level notifications
 //   2. Open or focus the PWA window when a notification is clicked
 //
-// Pushes are sent by multica-mobile-push (LXC 122). Payload shape:
+// Pushes are sent by the multica-mobile-push relay. Payload shape:
 //   { title, body, tag, url, icon }
 
 const CACHE = 'multica-mobile-v1';
