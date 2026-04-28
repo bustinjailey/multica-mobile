@@ -520,6 +520,13 @@ function renderCommentBody(content) {
   // Pass 1: markdown links → <a> tags
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, text, url) => {
     const safeUrl = url.replace(/"/g, '&quot;');
+    // mention://issue/<uuid-or-key> is what agents write for cross-issue
+    // references; route it to in-app navigation. Other mention:// schemes
+    // (agent/member/all) stay as inert pills.
+    const issueRef = url.match(/^mention:\/\/issue\/([A-Za-z0-9-]+)$/);
+    if (issueRef) {
+      return `<a href="#/issue/${issueRef[1]}">${escapeHtml(text)}</a>`;
+    }
     if (url.startsWith('mention://')) {
       return `<a href="${safeUrl}">${escapeHtml(text)}</a>`;
     }
