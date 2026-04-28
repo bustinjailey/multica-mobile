@@ -684,7 +684,7 @@ const STATUS_OPTIONS = [
 function readFilter() {
   return {
     scope: sessionStorage.getItem(FILTER_LS.scope) || 'mine',
-    status: sessionStorage.getItem(FILTER_LS.status) || 'open',
+    status: sessionStorage.getItem(FILTER_LS.status) || 'in_review',
   };
 }
 function writeFilter(f) {
