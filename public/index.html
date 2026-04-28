@@ -283,18 +283,24 @@ function connectWS() {
   catch (e) { state.wsStatus = 'offline'; updateConnIndicator(); scheduleReconnect(); return; }
   state.ws = ws;
   ws.onopen = () => {
+    // Send first-message auth in case the server lacks an auth cookie for us
+    // (PWA fresh install, expired cookie, etc.). When cookie auth already
+    // succeeded server-side, this becomes a no-op stray message in the
+    // post-auth read loop — the server logs it at debug and ignores it.
     ws.send(JSON.stringify({ type: 'auth', payload: { token: pat } }));
+    // Optimistically mark online: cookie-auth path never sends auth_ack, so
+    // waiting for it would strand cookie-authed clients on 'connecting'
+    // forever. A bad-token first-message auth path will produce an error
+    // frame + close, which onmessage / onclose handle below.
+    state.wsStatus = 'online';
+    reconnectDelay = 1000;
+    updateConnIndicator();
   };
   ws.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.error) { console.warn('ws error:', msg.error); ws.close(); return; }
-    if (msg.type === 'auth_ack') {
-      state.wsStatus = 'online';
-      reconnectDelay = 1000;
-      updateConnIndicator();
-      return;
-    }
+    if (msg.type === 'auth_ack') return; // already online via onopen
     if (msg.type) handleEvent(msg.type, msg.payload);
   };
   ws.onclose = () => {
