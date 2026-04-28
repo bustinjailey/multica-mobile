@@ -502,6 +502,17 @@ function toast(msg, ms = 2000) {
   setTimeout(() => el.remove(), ms);
 }
 
+// Detect a Multica issue URL and return its identifier (e.g. "SNA-171").
+// Agents emit links like https://multica.bustinjailey.org/<workspace>/issues/SNA-171.
+function parseMulticaIssueKey(url) {
+  try {
+    const u = new URL(url, location.href);
+    if (!/(^|\.)multica\.bustinjailey\.org$/.test(u.hostname)) return null;
+    const m = u.pathname.match(/\/issues\/([A-Za-z][A-Za-z0-9]*-\d+)\b/);
+    return m ? m[1].toUpperCase() : null;
+  } catch { return null; }
+}
+
 function renderCommentBody(content) {
   // Escape, then turn [text](mention://...) and [text](url) into pills/links,
   // then auto-linkify any remaining bare http(s):// URLs.
@@ -513,6 +524,10 @@ function renderCommentBody(content) {
       return `<a href="${safeUrl}">${escapeHtml(text)}</a>`;
     }
     if (/^https?:/.test(url)) {
+      const key = parseMulticaIssueKey(url);
+      if (key) {
+        return `<a href="#/issue/${key}">${escapeHtml(text)}</a>`;
+      }
       return `<a href="${safeUrl}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`;
     }
     return m;
@@ -528,6 +543,10 @@ function renderCommentBody(content) {
   out = out.replace(/(https?:\/\/[^\s<>"']+)/g, (raw) => {
     const m = raw.match(/^(.*?)([.,;:!?)\]]*)$/);
     const url = m[1], tail = m[2];
+    const key = parseMulticaIssueKey(url);
+    if (key) {
+      return `<a href="#/issue/${key}">${escapeHtml(key)}</a>${tail}`;
+    }
     return `<a href="${url.replace(/"/g, '&quot;')}" target="_blank" rel="noopener">${url}</a>${tail}`;
   });
   out = out.replace(/ PH(\d+) /g, (_, i) => placeholders[+i]);
@@ -963,10 +982,44 @@ function assigneeLabel(type, id) {
 }
 
 // ===================== Issue detail =====================
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-\d+$/;
+
+// Resolve an issue identifier (e.g. "SNA-171") to its UUID by listing issues
+// and matching on identifier. Returns null if not found.
+async function resolveIssueIdByKey(key) {
+  const params = new URLSearchParams({ limit: '200', q: key });
+  try {
+    const res = await api(`/api/issues?${params}`);
+    const arr = Array.isArray(res) ? res : (res.issues || []);
+    const want = key.toUpperCase();
+    const hit = arr.find(i => (i.identifier || '').toUpperCase() === want);
+    if (hit) return hit.id;
+  } catch {}
+  // Fallback: scan a larger window without server-side filter.
+  try {
+    const res = await api(`/api/issues?limit=500`);
+    const arr = Array.isArray(res) ? res : (res.issues || []);
+    const want = key.toUpperCase();
+    const hit = arr.find(i => (i.identifier || '').toUpperCase() === want);
+    if (hit) return hit.id;
+  } catch {}
+  return null;
+}
+
 async function viewIssue(app, issueId) {
   const c = chrome('', { back: true });
   app.innerHTML = `${c.header}<main><div id="detail"><div class="loading">Loading…</div></div></main>${c.nav}`;
   try {
+    // Hash routes may carry an issue identifier (e.g. "SNA-171") instead of a
+    // UUID — agent comments link to the desktop URL which uses the identifier.
+    // Resolve it to the canonical UUID before fetching, since the API endpoints
+    // for timeline/active-task are UUID-keyed.
+    if (!UUID_RE.test(issueId) && ISSUE_KEY_RE.test(issueId.toUpperCase())) {
+      const resolved = await resolveIssueIdByKey(issueId.toUpperCase());
+      if (!resolved) throw new Error(`Issue ${issueId} not found`);
+      issueId = resolved;
+    }
     const [issue, timeline, activeTask] = await Promise.all([
       api(`/api/issues/${issueId}`),
       api(`/api/issues/${issueId}/timeline`),
