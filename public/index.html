@@ -400,9 +400,10 @@ function toast(msg, ms = 2000) {
 }
 
 function renderCommentBody(content) {
-  // Escape, then turn [text](mention://...) and [text](url) into pills/links.
+  // Escape, then turn [text](mention://...) and [text](url) into pills/links,
+  // then auto-linkify any remaining bare http(s):// URLs.
   let out = escapeHtml(content || '');
-  // Match markdown links [text](url)
+  // Pass 1: markdown links → <a> tags
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, text, url) => {
     const safeUrl = url.replace(/"/g, '&quot;');
     if (url.startsWith('mention://')) {
@@ -413,6 +414,20 @@ function renderCommentBody(content) {
     }
     return m;
   });
+  // Pass 2: bare URLs. Stash already-rendered <a>...</a> in placeholders so
+  // we don't double-wrap markdown links we just produced, then linkify what's
+  // left, then restore. Trailing punctuation (.,;:!?)) is kept outside the link.
+  const placeholders = [];
+  out = out.replace(/<a [^>]*>[^<]*<\/a>/g, m => {
+    placeholders.push(m);
+    return ` PH${placeholders.length - 1} `;
+  });
+  out = out.replace(/(https?:\/\/[^\s<>"']+)/g, (raw) => {
+    const m = raw.match(/^(.*?)([.,;:!?)\]]*)$/);
+    const url = m[1], tail = m[2];
+    return `<a href="${url.replace(/"/g, '&quot;')}" target="_blank" rel="noopener">${url}</a>${tail}`;
+  });
+  out = out.replace(/ PH(\d+) /g, (_, i) => placeholders[+i]);
   return out;
 }
 
@@ -687,12 +702,12 @@ async function viewIssues(app) {
     params.set('limit', '50');
     if (filter === 'open') params.set('open_only', 'true');
     if (filter === 'mine' && state.me?.id) {
-      // member id, not user id — find ourselves in workspace members
-      const myMember = state.members.find(m => m.user_id === state.me.id);
-      if (myMember) {
-        params.set('assignee_type', 'member');
-        params.set('assignee_id', myMember.id);
-      }
+      // For member-assigned issues, the server stores user_id in assignee_id
+      // (verified empirically: querying with member.id returns 0 issues, with
+      // user_id returns the expected set). The dropdown and mention picker
+      // also emit user_id for consistency.
+      params.set('assignee_type', 'member');
+      params.set('assignee_id', state.me.id);
     }
     const issues = await api(`/api/issues?${params}`);
     const arr = Array.isArray(issues) ? issues : (issues.issues || []);
@@ -963,8 +978,9 @@ function buildAssigneeOptions(curType, curId) {
   if (state.members.length) {
     html += `<optgroup label="Members">`;
     for (const m of state.members) {
-      const label = m.name || m.email || m.id;
-      html += `<option value="member:${m.id}" ${sel('member', m.id)}>${escapeHtml(label)}</option>`;
+      const label = m.name || m.email || m.user_id;
+      // Use user_id, not member.id — see note in viewIssues.
+      html += `<option value="member:${m.user_id}" ${sel('member', m.user_id)}>${escapeHtml(label)}</option>`;
     }
     html += `</optgroup>`;
   }
@@ -1017,7 +1033,8 @@ function wireIssueDetail(app, issue, comments) {
     }
     for (const m of state.members) {
       const label = m.name || m.email || '';
-      if (!q || label.toLowerCase().includes(q)) results.push({ type: 'member', id: m.id, name: label || 'member', sub: 'member' });
+      // Use user_id, not member.id — see note in viewIssues.
+      if (!q || label.toLowerCase().includes(q)) results.push({ type: 'member', id: m.user_id, name: label || 'member', sub: 'member' });
     }
     if (!results.length) { closePicker(); return; }
     picker.innerHTML = `<div class="mention-picker">${results.slice(0, 8).map((r, i) => `
