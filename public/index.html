@@ -384,6 +384,9 @@ function connectWS() {
     state.wsStatus = 'online';
     reconnectDelay = 1000;
     updateConnIndicator();
+    // Notify view-level subscribers so list/board can re-hydrate active-task
+    // badges (the server doesn't replay events that fired during the drop).
+    bus.emit('ws:open');
   };
   ws.onmessage = (ev) => {
     let msg;
@@ -646,6 +649,10 @@ async function render() {
     if (m) {
       try { await r.view(app, ...m.slice(1)); }
       catch (e) { app.innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`; }
+      // Repaint the WS state into the freshly-mounted chrome's #conn-indicator
+      // span. connectWS() short-circuits when the socket is already open, so
+      // without this the indicator stays blank after every navigation.
+      updateConnIndicator();
       return;
     }
   }
@@ -1115,6 +1122,8 @@ async function viewIssues(app) {
   $('#f-scope').onchange = apply;
   $('#f-status').onchange = apply;
   $('#f-sort').onchange = apply;
+  const hydrateAbort = new AbortController();
+  state.viewSubs.push(() => hydrateAbort.abort());
   try {
     const raw = await fetchIssuesScoped(filter);
     const filtered = applyClientFilter(raw, filter);
@@ -1125,6 +1134,12 @@ async function viewIssues(app) {
       const issue = sorted.find(i => i.id === el.dataset.id);
       if (issue) el.onclick = () => openIssueCard(issue);
     });
+    // Hydrate 🤖 badges from /active-task in the background. WS task:dispatch
+    // events only fire for tasks that start AFTER the socket opens, so without
+    // this anything already running on app-load is invisible.
+    hydrateActiveTasksFromIssues(sorted, { signal: hydrateAbort.signal })
+      .then(changed => { if (changed) refreshIssuesList(); })
+      .catch(() => {});
   } catch (e) {
     $('#list').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
   }
@@ -1132,6 +1147,16 @@ async function viewIssues(app) {
   state.viewSubs.push(bus.on('activeTasks:changed', refreshIssuesList));
   state.viewSubs.push(bus.on('issue:created', () => viewIssues(app)));
   state.viewSubs.push(bus.on('issue:updated', () => viewIssues(app)));
+  // After a WS reconnect, re-hydrate badges from /active-task — events fired
+  // during the drop are not replayed by the server.
+  state.viewSubs.push(bus.on('ws:open', () => {
+    const cards = $$('#list .card');
+    if (!cards.length) return;
+    const issuesOnScreen = cards.map(el => ({ id: el.dataset.id, status: 'unknown' }));
+    hydrateActiveTasksFromIssues(issuesOnScreen, { signal: hydrateAbort.signal })
+      .then(changed => { if (changed) refreshIssuesList(); })
+      .catch(() => {});
+  }));
 }
 
 // Kanban-style swim lanes. Mobile-first: each column is fixed-width with
@@ -1212,6 +1237,10 @@ async function viewBoard(app) {
     writeFilter({ ...filter, scope: $('#b-scope').value });
     viewBoard(app);
   };
+  // Abort handle for any in-flight active-task hydration kicked off below.
+  // Hoisted so the ws:open subscriber at the bottom can reuse it.
+  const hydrateAbort = new AbortController();
+  state.viewSubs.push(() => hydrateAbort.abort());
   try {
     const raw = await fetchIssuesScoped({ ...filter, status: 'open' });
     const open = raw.filter(i => NON_TERMINAL_STATUSES.has(i.status));
@@ -1235,6 +1264,12 @@ async function viewBoard(app) {
       const issue = flat.find(i => i.id === el.dataset.id);
       if (issue) el.onclick = () => openIssueCard(issue);
     });
+    // See viewIssues — same backfill rationale: the WS only emits dispatch
+    // events for tasks that start after we connect, so initial-load badges
+    // miss anything already running.
+    hydrateActiveTasksFromIssues(flat, { signal: hydrateAbort.signal })
+      .then(changed => { if (changed) refreshBoardCards(); })
+      .catch(() => {});
   } catch (e) {
     $('#board').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
   }
@@ -1248,6 +1283,14 @@ async function viewBoard(app) {
     const snap = captureBoardScroll();
     await viewBoard(app);
     restoreBoardScroll(snap);
+  }));
+  state.viewSubs.push(bus.on('ws:open', () => {
+    const cards = $$('#board .card');
+    if (!cards.length) return;
+    const issuesOnScreen = cards.map(el => ({ id: el.dataset.id, status: 'unknown' }));
+    hydrateActiveTasksFromIssues(issuesOnScreen, { signal: hydrateAbort.signal })
+      .then(changed => { if (changed) refreshBoardCards(); })
+      .catch(() => {});
   }));
 }
 
@@ -1322,6 +1365,49 @@ async function resolveIssueIdByKey(key) {
 // in 'dispatched', 'started', or other intermediate states slipped through and
 // the user was shown nothing.
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled', 'done', 'errored']);
+
+// Issue statuses where a live agent task is implausible — used to skip them
+// during bulk active-task hydration on list/board views to keep the request
+// fan-out small.
+const NEVER_ACTIVE_ISSUE_STATUSES = new Set(['done', 'cancelled', 'completed']);
+
+// Bulk-populate state.activeTasks for the visible issue list. Without this,
+// the 🤖 badge only appears for issues whose tasks emitted task:dispatch /
+// task:progress AFTER the WS connected — anything dispatched before app open
+// or during a WS dropout is invisible. We fan out per-issue /active-task
+// requests in parallel (capped concurrency) and apply the same backfill
+// logic the issue-detail view uses.
+//
+// Returns true if any badge state changed (caller can repaint).
+async function hydrateActiveTasksFromIssues(issues, opts = {}) {
+  const { signal } = opts;
+  const eligible = issues.filter(i => i && i.id && !NEVER_ACTIVE_ISSUE_STATUSES.has(i.status));
+  if (!eligible.length) return false;
+  const before = new Map();
+  for (const i of eligible) before.set(i.id, state.activeTasks[i.id]?.task_id || null);
+  const CONCURRENCY = 8;
+  let idx = 0;
+  async function worker() {
+    while (idx < eligible.length) {
+      const myIdx = idx++;
+      if (signal?.aborted) return;
+      const issue = eligible[myIdx];
+      try {
+        const t = await api(`/api/issues/${issue.id}/active-task`);
+        if (signal?.aborted) return;
+        await applyActiveTaskBackfill(issue.id, t);
+      } catch { /* 404 / network — leave state.activeTasks untouched */ }
+    }
+  }
+  const workers = Array.from({ length: Math.min(CONCURRENCY, eligible.length) }, worker);
+  await Promise.all(workers);
+  if (signal?.aborted) return false;
+  // Detect change so callers can decide whether to repaint.
+  for (const i of eligible) {
+    if (before.get(i.id) !== (state.activeTasks[i.id]?.task_id || null)) return true;
+  }
+  return false;
+}
 
 async function applyActiveTaskBackfill(issueId, activeTask) {
   const isLive = activeTask && activeTask.id && !TERMINAL_TASK_STATUSES.has(activeTask.status);
@@ -1622,6 +1708,7 @@ function renderIssueDetail(i, timeline) {
         <button id="mention-btn" class="ghost icon" title="Mention">@</button>
       </div>
     </div>
+    <button id="go-to-top" aria-label="Scroll to top" title="Scroll to top" style="display:none;position:fixed;right:16px;bottom:calc(72px + var(--safe-bottom) + var(--vv-bottom) + 12px);z-index:9;width:44px;height:44px;min-height:44px;padding:0;border-radius:22px;background:var(--surface);color:var(--text);border:1px solid var(--border);box-shadow:0 4px 12px rgba(0,0,0,0.25);font-size:20px;line-height:1;">↑</button>
   `;
 }
 
@@ -1740,6 +1827,19 @@ function wireIssueDetail(app, issue, timeline) {
       if (last) last.scrollIntoView({ behavior: 'smooth', block: 'end' });
       else list?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     };
+  }
+  // Floating "go to top" button — long issue threads on mobile mean a lot of
+  // scrolling; this gets you back to the title/status/assignee bar in one tap.
+  // Visible only after scrolling past 320px so it doesn't clutter short issues.
+  const topBtn = document.getElementById('go-to-top');
+  if (topBtn) {
+    const onScroll = () => {
+      topBtn.style.display = window.scrollY > 320 ? 'block' : 'none';
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    topBtn.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+    state.viewSubs.push(() => window.removeEventListener('scroll', onScroll));
   }
   // Status change
   $('#status').onchange = async (e) => {
