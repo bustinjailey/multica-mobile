@@ -1139,6 +1139,57 @@ async function viewIssues(app) {
 // horizontally instead of trying to fit five lanes on a 380px screen.
 const BOARD_LANES = ['in_review', 'in_progress', 'blocked', 'todo', 'backlog'];
 
+// Snapshot the board's horizontal lane position + each lane's vertical card
+// scroll so a live re-render (active-task tick, issue create/update) doesn't
+// yank the user back to the top-left.
+function captureBoardScroll() {
+  const board = document.getElementById('board');
+  if (!board) return null;
+  const lanes = {};
+  $$('#board .lane').forEach(el => {
+    const cards = el.querySelector('.lane-cards');
+    if (cards) lanes[el.dataset.status] = cards.scrollTop;
+  });
+  return { boardLeft: board.scrollLeft, lanes };
+}
+
+function restoreBoardScroll(snap) {
+  if (!snap) return;
+  const board = document.getElementById('board');
+  if (!board) return;
+  board.scrollLeft = snap.boardLeft;
+  $$('#board .lane').forEach(el => {
+    const cards = el.querySelector('.lane-cards');
+    const top = snap.lanes[el.dataset.status];
+    if (cards && typeof top === 'number') cards.scrollTop = top;
+  });
+}
+
+// In-place 🤖 badge refresh for active-task ticks. Mirrors refreshIssuesList()
+// so a tick doesn't trigger a full re-render (and the scroll loss that comes
+// with it). Issue create/update still does a full fetch — those go through
+// captureBoardScroll/restoreBoardScroll instead.
+function refreshBoardCards() {
+  const board = document.getElementById('board');
+  if (!board) return;
+  $$('#board .card').forEach(el => {
+    const id = el.dataset.id;
+    if (!id) return;
+    const active = state.activeTasks[id];
+    let badge = el.querySelector('.row1 span[title]');
+    if (active && !badge) {
+      const titleEl = el.querySelector('.row1');
+      titleEl.insertAdjacentHTML('beforeend', `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">🤖</span>`);
+      el.style.borderColor = 'var(--accent)';
+    } else if (active && badge) {
+      badge.title = active.agent_name + ': ' + active.summary;
+    } else if (!active && badge) {
+      badge.remove();
+      el.style.borderColor = '';
+    }
+  });
+}
+
 async function viewBoard(app) {
   const filter = readFilter();
   const selectStyle = 'width:auto;min-height:36px;padding:6px 8px;font-size:13px;';
@@ -1187,9 +1238,17 @@ async function viewBoard(app) {
   } catch (e) {
     $('#board').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
   }
-  state.viewSubs.push(bus.on('activeTasks:changed', () => viewBoard(app)));
-  state.viewSubs.push(bus.on('issue:created', () => viewBoard(app)));
-  state.viewSubs.push(bus.on('issue:updated', () => viewBoard(app)));
+  state.viewSubs.push(bus.on('activeTasks:changed', refreshBoardCards));
+  state.viewSubs.push(bus.on('issue:created', async () => {
+    const snap = captureBoardScroll();
+    await viewBoard(app);
+    restoreBoardScroll(snap);
+  }));
+  state.viewSubs.push(bus.on('issue:updated', async () => {
+    const snap = captureBoardScroll();
+    await viewBoard(app);
+    restoreBoardScroll(snap);
+  }));
 }
 
 function renderIssueCard(i) {
