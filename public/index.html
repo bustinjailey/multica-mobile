@@ -1694,7 +1694,6 @@ function renderIssueDetail(i, timeline) {
     </div>
     <div id="active-banner">${renderActiveBanner(i.id)}</div>
     <div id="activity-log">${renderActivityLog(i.id)}</div>
-    ${commentCount > 1 ? `<button id="jump-latest" class="ghost" style="width:100%;margin-bottom:12px;font-size:13px;">↓ Jump to latest activity</button>` : ''}
     ${i.description ? `<div class="comment"><div class="body">${renderCommentBody(i.description)}</div></div>` : ''}
 
     <h3 style="font-size:14px;color:var(--muted);margin:20px 0 8px;">History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})</h3>
@@ -1708,6 +1707,7 @@ function renderIssueDetail(i, timeline) {
         <button id="mention-btn" class="ghost icon" title="Mention">@</button>
       </div>
     </div>
+    <button id="go-to-bottom" aria-label="Scroll to latest" title="Scroll to latest" style="display:none;position:fixed;right:16px;bottom:calc(72px + var(--safe-bottom) + var(--vv-bottom) + 68px);z-index:9;width:44px;height:44px;min-height:44px;padding:0;border-radius:22px;background:var(--surface);color:var(--text);border:1px solid var(--border);box-shadow:0 4px 12px rgba(0,0,0,0.25);font-size:20px;line-height:1;">↓</button>
     <button id="go-to-top" aria-label="Scroll to top" title="Scroll to top" style="display:none;position:fixed;right:16px;bottom:calc(72px + var(--safe-bottom) + var(--vv-bottom) + 12px);z-index:9;width:44px;height:44px;min-height:44px;padding:0;border-radius:22px;background:var(--surface);color:var(--text);border:1px solid var(--border);box-shadow:0 4px 12px rgba(0,0,0,0.25);font-size:20px;line-height:1;">↑</button>
   `;
 }
@@ -1818,29 +1818,51 @@ function buildAssigneeOptions(curType, curId) {
 }
 
 function wireIssueDetail(app, issue, timeline) {
-  // Jump-to-latest button: scroll the last activity entry into view.
-  const jumpBtn = document.getElementById('jump-latest');
-  if (jumpBtn) {
-    jumpBtn.onclick = () => {
+  // Floating scroll buttons. Both are hidden while the composer's action row
+  // (Send / @ buttons) is in view, so neither overlaps the @ button when the
+  // user has scrolled to the bottom to comment.
+  const topBtn = document.getElementById('go-to-top');
+  const bottomBtn = document.getElementById('go-to-bottom');
+  const composerActions = document.querySelector('.composer .actions');
+  let composerVisible = false;
+
+  const updateButtons = () => {
+    const docH = document.documentElement.scrollHeight;
+    const winH = window.innerHeight;
+    const y = window.scrollY;
+    const moreBelow = (docH - (y + winH)) > winH * 0.5;
+    if (topBtn) topBtn.style.display = (!composerVisible && y > 320) ? 'block' : 'none';
+    if (bottomBtn) bottomBtn.style.display = (!composerVisible && moreBelow) ? 'block' : 'none';
+  };
+
+  if (bottomBtn) {
+    bottomBtn.onclick = () => {
       const list = document.getElementById('comments');
       const last = list?.lastElementChild;
       if (last) last.scrollIntoView({ behavior: 'smooth', block: 'end' });
       else list?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     };
   }
-  // Floating "go to top" button — long issue threads on mobile mean a lot of
-  // scrolling; this gets you back to the title/status/assignee bar in one tap.
-  // Visible only after scrolling past 320px so it doesn't clutter short issues.
-  const topBtn = document.getElementById('go-to-top');
   if (topBtn) {
-    const onScroll = () => {
-      topBtn.style.display = window.scrollY > 320 ? 'block' : 'none';
-    };
-    onScroll();
-    window.addEventListener('scroll', onScroll, { passive: true });
     topBtn.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
-    state.viewSubs.push(() => window.removeEventListener('scroll', onScroll));
   }
+
+  let observer = null;
+  if (composerActions && 'IntersectionObserver' in window) {
+    observer = new IntersectionObserver((entries) => {
+      composerVisible = entries[0].isIntersecting;
+      updateButtons();
+    }, { threshold: 0.01 });
+    observer.observe(composerActions);
+  }
+  window.addEventListener('scroll', updateButtons, { passive: true });
+  window.addEventListener('resize', updateButtons, { passive: true });
+  updateButtons();
+  state.viewSubs.push(() => {
+    window.removeEventListener('scroll', updateButtons);
+    window.removeEventListener('resize', updateButtons);
+    if (observer) observer.disconnect();
+  });
   // Status change
   $('#status').onchange = async (e) => {
     const newStatus = e.target.value;
