@@ -167,6 +167,16 @@
   /* Composer */
   .composer { position: relative; }
   .composer .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .composer .quick-actions {
+    display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .composer .quick-actions button {
+    flex: 0 1 auto; padding: 6px 10px; font-size: 12px;
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    cursor: pointer; min-height: 32px;
+  }
+  .composer .quick-actions button:disabled { opacity: 0.5; cursor: default; }
   .mention-picker {
     position: absolute; bottom: calc(100% + 4px); left: 0; right: 0;
     background: var(--surface); border: 1px solid var(--border);
@@ -1617,6 +1627,7 @@ function wireIssueLive(app, issue) {
       const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
       const heading = document.querySelector('#detail h3');
       if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
+      refreshQuickActions(issue, fresh || []);
     } catch (e) { /* ignore */ }
   };
   ['comment:created', 'comment:updated', 'comment:deleted', 'reaction:added', 'reaction:removed', 'activity:created']
@@ -1668,6 +1679,7 @@ function wireIssueLive(app, issue) {
       const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
       const heading = document.querySelector('#detail h3');
       if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
+      refreshQuickActions(issue, fresh || []);
     } catch (e) { /* ignore */ }
   };
   const onVisible = () => { if (!document.hidden) catchUp(); };
@@ -1700,6 +1712,7 @@ function renderIssueDetail(i, timeline) {
     <div id="comments">${timeline.map(renderTimelineEntry).join('') || '<div class="empty" style="padding:16px;">No activity yet.</div>'}</div>
 
     <div class="composer" style="margin-top:16px;">
+      <div id="quick-actions" class="quick-actions">${renderQuickActions(i, timeline)}</div>
       <textarea id="composer-text" placeholder="Comment… (type @ to mention an agent or member)"></textarea>
       <div id="picker"></div>
       <div class="actions">
@@ -1795,6 +1808,131 @@ function renderCommentEl(c) {
       </div>
       <div class="body">${renderCommentBody(c.content)}</div>
     </div>`;
+}
+
+// Derive quick-action targets from the timeline. Walks `assignee_changed`
+// activities chronologically to reconstruct the assignment sequence, then
+// picks:
+//   previousAssignee    — most recent assignee (any kind) before the current one
+//   previousDevAssignee — most recent agent assignee before the current one
+//
+// "Dev assignee" is the agent that wrote the PR. We don't have explicit
+// PR linkage in Multica, so we approximate with "most recent prior agent
+// assignee" — in the common Bustin Lab / Snapview workflow (architect plans,
+// engineer implements + opens PR, hands to reviewer), this resolves to the
+// PR-opening agent.
+function deriveQuickTargets(timeline, currentType, currentId) {
+  const seq = [];
+  for (const t of timeline || []) {
+    if (t.type !== 'activity' || t.action !== 'assignee_changed') continue;
+    const d = t.details || {};
+    if (d.to_id) seq.push({ type: d.to_type, id: d.to_id });
+    else seq.push({ type: null, id: null });
+  }
+  const sameAsCurrent = (e) => e && e.type === currentType && e.id === currentId;
+  const isUsable = (e) => e && e.id && !sameAsCurrent(e);
+  let previous = null;
+  for (let i = seq.length - 1; i >= 0; i--) {
+    if (isUsable(seq[i])) { previous = seq[i]; break; }
+  }
+  let previousDev = null;
+  for (let i = seq.length - 1; i >= 0; i--) {
+    if (isUsable(seq[i]) && seq[i].type === 'agent') { previousDev = seq[i]; break; }
+  }
+  const resolveName = (e) => {
+    if (!e) return null;
+    if (e.type === 'agent') return state.agentsById[e.id]?.name || null;
+    if (e.type === 'member' || e.type === 'user') {
+      const m = state.membersById[e.id];
+      return m?.name || m?.email || null;
+    }
+    return null;
+  };
+  return {
+    previous: previous && resolveName(previous) ? { ...previous, name: resolveName(previous) } : null,
+    previousDev: previousDev && resolveName(previousDev) ? { ...previousDev, name: resolveName(previousDev) } : null,
+  };
+}
+
+// Render the row of quick-action buttons above the composer textarea.
+// Each button's data-* attributes carry everything `wireQuickActions` needs
+// to post the right comment when tapped — no extra state lookup at click time.
+//
+//   fix-pr-conflicts → mentions previousDev (agent), triggers a run
+//   continue         → mentions previous (agent or member)
+//   approved         → plain text, no mention link, no run trigger
+//
+// Buttons render only when their target exists; the row collapses to empty
+// when neither applies.
+function renderQuickActions(issue, timeline) {
+  const t = deriveQuickTargets(timeline, issue.assignee_type, issue.assignee_id);
+  const out = [];
+  if (t.previousDev) {
+    out.push(`<button type="button" data-action="fix-pr-conflicts"
+      data-target-type="${t.previousDev.type}" data-target-id="${t.previousDev.id}"
+      data-target-name="${escapeHtml(t.previousDev.name)}"
+      title="Send '@${escapeHtml(t.previousDev.name)} fix PR conflicts' as a comment">
+      ${escapeHtml(t.previousDev.name)}: fix PR conflicts</button>`);
+  }
+  if (t.previous) {
+    out.push(`<button type="button" data-action="continue"
+      data-target-type="${t.previous.type}" data-target-id="${t.previous.id}"
+      data-target-name="${escapeHtml(t.previous.name)}"
+      title="Send '@${escapeHtml(t.previous.name)} continue' as a comment">
+      ${escapeHtml(t.previous.name)}: continue</button>`);
+    out.push(`<button type="button" data-action="approved"
+      data-target-name="${escapeHtml(t.previous.name)}"
+      title="Send 'Approved.' as a comment (no run trigger)">
+      ${escapeHtml(t.previous.name)}: approved</button>`);
+  }
+  return out.join('');
+}
+
+// Wire (or re-wire) click handlers on the quick-action buttons. Idempotent —
+// safe to call after every re-render of the #quick-actions row.
+//
+// fix-pr-conflicts / continue post a comment with an agent-mention link, which
+// the server treats as a run-trigger. "approved" posts plain text only; the
+// recipient is shown in the button label, but no mention is included so an
+// acknowledgement doesn't kick off another agent run.
+function wireQuickActions(issue) {
+  const all = $$('#quick-actions button');
+  const post = async (content) => {
+    all.forEach(b => b.disabled = true);
+    try {
+      await api(`/api/issues/${issue.id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content, type: 'comment' }),
+      });
+      // The WS broadcast / refreshTimeline path will re-render the timeline
+      // and the quick-actions row. Don't double-render here.
+      toast('Sent');
+    } catch (e) {
+      toast(e.message);
+      all.forEach(b => b.disabled = false);
+    }
+  };
+  all.forEach(btn => {
+    btn.onclick = () => {
+      const action = btn.dataset.action;
+      const name = btn.dataset.targetName;
+      const type = btn.dataset.targetType;
+      const id = btn.dataset.targetId;
+      if (action === 'fix-pr-conflicts') post(`[@${name}](mention://${type}/${id}) fix PR conflicts`);
+      else if (action === 'continue') post(`[@${name}](mention://${type}/${id}) continue`);
+      else if (action === 'approved') post(`Approved.`);
+    };
+  });
+}
+
+// Re-render the quick-actions row from the latest issue + timeline state, then
+// re-attach click handlers. Called after any timeline or issue update so the
+// buttons (and their target labels) stay in sync with the current assignment.
+function refreshQuickActions(issue, timeline) {
+  const el = document.getElementById('quick-actions');
+  if (!el) return;
+  el.innerHTML = renderQuickActions(issue, timeline);
+  wireQuickActions(issue);
 }
 
 function buildAssigneeOptions(curType, curId) {
@@ -1948,6 +2086,8 @@ function wireIssueDetail(app, issue, timeline) {
     ta.setSelectionRange(pos + 1, pos + 1);
     openPicker('', pos);
   };
+  wireQuickActions(issue);
+
   $('#send').onclick = async () => {
     const content = ta.value.trim();
     if (!content) return;
@@ -1967,6 +2107,7 @@ function wireIssueDetail(app, issue, timeline) {
       const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
       const heading = document.querySelector('#detail h3');
       if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
+      refreshQuickActions(issue, fresh || []);
       toast('Sent');
     } catch (e) {
       toast(e.message);
