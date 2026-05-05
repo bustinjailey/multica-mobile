@@ -48,7 +48,21 @@ your-multica.example.com {
 
 If you want to host the PWA on a *different* origin, the Multica backend's `CORS_ALLOWED_ORIGINS` env must include that origin.
 
-To ship a change, edit `public/index.html`, commit and push. Caddy reads files at request time, so a fresh checkout on the serving host is all that's needed (no reload).
+To ship a change: edit `public/index.html`, commit, and push to `main`. The serving host then needs to pull the update — Caddy serves files from disk at request time, so no reload is needed, but **`git pull` on the host is not automatic**. Something on the box has to do it.
+
+A systemd timer running a fetch-and-sync is enough:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+git -C /var/lib/multica-mobile-deploy/repo fetch --depth=1 origin main
+git -C /var/lib/multica-mobile-deploy/repo reset --hard origin/main
+rsync -a --delete /var/lib/multica-mobile-deploy/repo/public/ /opt/apps/multica-mobile/public/
+```
+
+paired with a `.timer` on `OnUnitActiveSec=5min`. A cron entry or a GitHub `push` webhook works just as well — the only requirement is that the checkout Caddy serves from ends up current.
+
+`public/` is prebuilt and committed, so there is no build step at deploy time.
 
 ## First-time use
 
