@@ -981,7 +981,7 @@ const STATUS_RANK = {
 const PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
 function readFilter() {
   return {
-    scope: sessionStorage.getItem(FILTER_LS.scope) || 'mine',
+    scope: sessionStorage.getItem(FILTER_LS.scope) || 'all',
     status: sessionStorage.getItem(FILTER_LS.status) || 'open',
     sort: sessionStorage.getItem(FILTER_LS.sort) || 'updated',
   };
