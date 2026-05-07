@@ -181,7 +181,12 @@ async function lookupIssue(id: string): Promise<{ ident: string; title: string }
   }
 }
 
-const issueUrl = (id: string) => `/m/#/issue/${id}`;
+// Pin the URL to this relay's workspace so that clicking the notification on a
+// device whose currently-selected workspace is something else still opens the
+// right issue. The PWA reads ?ws=<slug> off the hash route and switches the
+// active workspace before fetching.
+const issueUrl = (id: string) =>
+  `/m/#/issue/${id}?ws=${encodeURIComponent(config.workspaceSlug)}`;
 
 // Track previous assignee/status per issue so we can detect transitions on
 // issue:updated (which carries the post-update issue, not a delta).
