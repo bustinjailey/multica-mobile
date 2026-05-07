@@ -50,9 +50,8 @@ Behind a reverse proxy you'd typically expose these at `https://<your-host>/m/pu
 
 ```sh
 # As root on the host that should run the relay:
-git clone https://github.com/bustinjailey/multica-mobile-push /opt/multica-mobile-push
-cd /opt/multica-mobile-push
-bash deploy/install.sh
+git clone https://github.com/bustinjailey/multica-mobile /opt/multica-mobile
+bash /opt/multica-mobile/push/deploy/install.sh
 
 # Edit /etc/multica-mobile-push/env to set MULTICA_URL, WORKSPACE_SLUG,
 # MULTICA_PAT and TARGET_USER_ID (mint a dedicated PAT for this service so
@@ -66,9 +65,9 @@ The first start will generate a VAPID keypair under `/var/lib/multica-mobile-pus
 ## Update
 
 ```sh
-cd /opt/multica-mobile-push
+cd /opt/multica-mobile
 git pull
-bash deploy/install.sh
+bash push/deploy/install.sh
 ```
 
 ## Reverse proxy

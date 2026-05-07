@@ -1,12 +1,16 @@
 #!/bin/bash
 # Install / update multica-mobile-push. Idempotent.
-# Run this from $INSTALL_DIR as root after `git pull`.
+# Run this from anywhere as root after `git pull` of the multica-mobile repo.
 #
 # First run also generates VAPID keys (under /var/lib/multica-mobile-push/) and
 # warns if /etc/multica-mobile-push/env hasn't been seeded with required values.
 set -euo pipefail
 
-INSTALL_DIR="/opt/multica-mobile-push"
+# Lives at <repo>/push/ inside the multica-mobile monorepo. The convention is
+# to clone the monorepo to /opt/multica-mobile and run the relay out of the
+# push/ subdirectory; the data, env and service-name layout below is unchanged
+# from the pre-monorepo deploy so existing subs and config carry over.
+INSTALL_DIR="/opt/multica-mobile/push"
 DATA_DIR="/var/lib/multica-mobile-push"
 ENV_DIR="/etc/multica-mobile-push"
 SERVICE_NAME="multica-mobile-push"
