@@ -616,7 +616,9 @@ const routes = [
   { match: /^#\/inbox$/, view: viewInbox },
   { match: /^#\/issues$/, view: viewIssues },
   { match: /^#\/board$/, view: viewBoard },
-  { match: /^#\/issue\/([^/]+)$/, view: viewIssue },
+  // Capture: (1) issue id or identifier, (2) optional query string after `?`
+  // (e.g. `?ws=<slug>` from push notifications). The view handler parses (2).
+  { match: /^#\/issue\/([^/?]+)(?:\?(.*))?$/, view: viewIssue },
   { match: /^#\/new$/, view: viewNewIssue },
   { match: /^#\/settings$/, view: viewSettings },
 ];
@@ -634,6 +636,20 @@ async function render() {
   if (!state.scope) {
     state.scope = state.workspace.id;
     localStorage.setItem(LS.scope, state.scope);
+  }
+
+  // Push notifications include `?ws=<slug>` on the issue route so a click on
+  // a foreign-workspace notification still resolves correctly. Switch state
+  // BEFORE loadWorkspaceData() so the lazy fetch hits the right workspace.
+  // If the slug isn't in the cached workspaces list, the in-view 404 fallback
+  // covers it.
+  const wsHashMatch = (location.hash || '').match(/[?&]ws=([^&]+)/);
+  if (wsHashMatch) {
+    const slug = decodeURIComponent(wsHashMatch[1]);
+    if (state.workspace?.slug !== slug) {
+      const target = (state.workspaces || []).find(w => w.slug === slug);
+      if (target) switchToWorkspace(target);
+    }
   }
 
   // Lazy-load shared data on first render
@@ -789,25 +805,32 @@ async function fetchIssuesScoped(filter) {
   return ws ? arr.map(i => ({ ...i, _workspace: { id: ws.id, slug: ws.slug, name: ws.name } })) : arr;
 }
 
+// Make `ws` the active workspace and bust workspace-specific caches. No-op
+// when `ws` is already active. Used by the cross-workspace issue list (open a
+// foreign-workspace issue), the workspace-scope dropdown, the new-issue form,
+// and the push-notification deep-link path (?ws=<slug>).
+function switchToWorkspace(ws) {
+  if (!ws || !ws.id) return false;
+  if (state.workspace?.id === ws.id) return false;
+  const full = (state.workspaces || []).find(x => x.id === ws.id) || ws;
+  state.workspace = {
+    id: full.id,
+    slug: full.slug,
+    name: full.name,
+    issuePrefix: full.issue_prefix || full.issuePrefix || '',
+  };
+  localStorage.setItem(LS.ws, JSON.stringify(state.workspace));
+  state.agents = []; state.members = []; state.agentsById = {}; state.membersById = {};
+  state.activeTasks = {}; state.taskMessages = {};
+  if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
+  return true;
+}
+
 // Click handler for issue cards. In cross-workspace mode we may be looking at
 // an issue that lives in a workspace other than the currently-selected one;
 // switch state.workspace to that workspace synchronously, then navigate.
 function openIssueCard(issue) {
-  const w = issue._workspace;
-  if (w && w.id && state.workspace?.id !== w.id) {
-    const full = state.workspaces.find(x => x.id === w.id) || w;
-    state.workspace = {
-      id: full.id,
-      slug: full.slug,
-      name: full.name,
-      issuePrefix: full.issue_prefix || full.issuePrefix || '',
-    };
-    localStorage.setItem(LS.ws, JSON.stringify(state.workspace));
-    // Bust caches that are workspace-specific (agents/members/active tasks).
-    state.agents = []; state.members = []; state.agentsById = {}; state.membersById = {};
-    state.activeTasks = {}; state.taskMessages = {};
-    if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
-  }
+  switchToWorkspace(issue._workspace);
   navigate(`#/issue/${issue.id}`);
 }
 
@@ -1091,16 +1114,7 @@ function applyScopeChange(newScope) {
     const ws = state.workspaces.find(w => w.id === newScope);
     if (!ws) return;
     state.scope = ws.id;
-    state.workspace = {
-      id: ws.id,
-      slug: ws.slug,
-      name: ws.name,
-      issuePrefix: ws.issue_prefix || ws.issuePrefix || '',
-    };
-    localStorage.setItem(LS.ws, JSON.stringify(state.workspace));
-    state.agents = []; state.members = []; state.agentsById = {}; state.membersById = {};
-    state.activeTasks = {}; state.taskMessages = {};
-    if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
+    switchToWorkspace(ws);
   }
   localStorage.setItem(LS.scope, state.scope);
 }
@@ -1447,7 +1461,7 @@ async function applyActiveTaskBackfill(issueId, activeTask) {
   }
 }
 
-async function viewIssue(app, issueId) {
+async function viewIssue(app, issueId, _query) {
   const c = chrome('', { back: true });
   app.innerHTML = `${c.header}<main><div id="detail"><div class="loading">Loading…</div></div></main>${c.nav}`;
   try {
@@ -1460,11 +1474,33 @@ async function viewIssue(app, issueId) {
       if (!resolved) throw new Error(`Issue ${issueId} not found`);
       issueId = resolved;
     }
-    const [issue, timeline, activeTask] = await Promise.all([
-      api(`/api/issues/${issueId}`),
-      api(`/api/issues/${issueId}/timeline`),
-      api(`/api/issues/${issueId}/active-task`).catch(() => null),
-    ]);
+    let issue, timeline, activeTask;
+    try {
+      [issue, timeline, activeTask] = await Promise.all([
+        api(`/api/issues/${issueId}`),
+        api(`/api/issues/${issueId}/timeline`),
+        api(`/api/issues/${issueId}/active-task`).catch(() => null),
+      ]);
+    } catch (e) {
+      // Fallback for push notifications delivered before the relay started
+      // including ?ws=<slug>: the issue may live in a workspace other than
+      // the active one. Scan the known workspaces and retry under each slug.
+      // If we find it, switch to that workspace, then re-render so the rest
+      // of the app (workspace data, WS subscription) reattaches correctly.
+      if (UUID_RE.test(issueId) && Array.isArray(state.workspaces)) {
+        const candidates = state.workspaces.filter(w => w.slug !== state.workspace?.slug);
+        for (const ws of candidates) {
+          try {
+            const found = await api(`/api/issues/${issueId}`, { workspaceSlug: ws.slug });
+            if (found && found.id) {
+              switchToWorkspace(ws);
+              return render();
+            }
+          } catch { /* try next */ }
+        }
+      }
+      throw e;
+    }
     await applyActiveTaskBackfill(issueId, activeTask);
     document.querySelector('header.top h1').textContent = issue.identifier;
     $('#detail').innerHTML = renderIssueDetail(issue, timeline || []);
@@ -2121,7 +2157,18 @@ function wireIssueDetail(app, issue, timeline) {
 async function viewNewIssue(app) {
   const c = chrome('New Issue', { back: true });
   const assigneeOptions = buildAssigneeOptions(null, null);
+  // The cross-workspace lens means the user can be looking at issues from any
+  // workspace they can see. Without this dropdown the new issue always lands
+  // in the last single-workspace selection, which is easy to forget. Default
+  // to the active workspace and fall back to it if the cross-workspace list
+  // hasn't loaded yet.
+  const wss = (state.workspaces || []).slice();
+  const activeId = state.workspace?.id;
+  const wsSelectOptions = (wss.length ? wss : (state.workspace ? [state.workspace] : []))
+    .map(w => `<option value="${w.id}" ${w.id === activeId ? 'selected' : ''}>${escapeHtml(w.name || w.slug || w.id)}</option>`)
+    .join('');
   app.innerHTML = `${c.header}<main>
+    <div class="field"><label>Workspace</label><select id="ws">${wsSelectOptions}</select></div>
     <div class="field"><label>Title</label><input id="title" placeholder="What needs to happen?" autofocus></div>
     <div class="field"><label>Description</label><textarea id="desc" rows="4" placeholder="Optional"></textarea></div>
     <div class="row">
@@ -2137,10 +2184,23 @@ async function viewNewIssue(app) {
     <div class="field"><label>Assignee</label><select id="assignee">${assigneeOptions}</select></div>
     <button id="create" style="width:100%;">Create</button>
   </main>${c.nav}`;
+  // Switching workspace must reload agents/members so the assignee dropdown
+  // reflects the chosen workspace. Re-render the form rather than splicing.
+  $('#ws').onchange = (e) => {
+    const target = (state.workspaces || []).find(w => w.id === e.target.value);
+    if (target && switchToWorkspace(target)) {
+      state.scope = target.id;
+      localStorage.setItem(LS.scope, state.scope);
+      render();
+    }
+  };
   $('#create').onclick = async () => {
     const title = $('#title').value.trim();
     if (!title) return toast('Title required');
     const v = $('#assignee').value;
+    const wsId = $('#ws').value;
+    const wsTarget = (state.workspaces || []).find(w => w.id === wsId) || state.workspace;
+    const wsSlug = wsTarget?.slug || state.workspace?.slug;
     const body = {
       title,
       description: $('#desc').value || null,
@@ -2150,7 +2210,18 @@ async function viewNewIssue(app) {
     if (v) { const [t, id] = v.split(':'); body.assignee_type = t; body.assignee_id = id; }
     $('#create').disabled = true;
     try {
-      const issue = await api('/api/issues', { method: 'POST', body: JSON.stringify(body) });
+      const issue = await api('/api/issues', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        workspaceSlug: wsSlug,
+      });
+      // If creating in a non-active workspace, switch first so the issue
+      // detail view fetches under the right slug.
+      if (wsTarget && wsTarget.id !== state.workspace?.id) {
+        switchToWorkspace(wsTarget);
+        state.scope = wsTarget.id;
+        localStorage.setItem(LS.scope, state.scope);
+      }
       navigate(`#/issue/${issue.id}`);
     } catch (e) {
       toast(e.message);

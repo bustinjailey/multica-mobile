@@ -2,6 +2,11 @@
 
 Tiny mobile-friendly PWA for [Multica](https://github.com/multica-ai/multica). Talks directly to the Multica HTTP API using a Personal Access Token. Single static HTML file, no build step.
 
+This repo is a monorepo with two parts:
+
+- [`public/`](public/) — the PWA itself, a single static HTML file served by the reverse proxy in front of Multica.
+- [`push/`](push/) — the optional Web Push relay (Node service) that turns Multica events into lock-screen notifications. See [`push/README.md`](push/README.md) for install/update instructions.
+
 ## Features
 
 - 📥 Inbox with unread badge
