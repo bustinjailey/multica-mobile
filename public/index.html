@@ -1859,9 +1859,19 @@ function renderCommentEl(c) {
 // PR-opening agent.
 function deriveQuickTargets(timeline, currentType, currentId) {
   const seq = [];
+  // Seed with the `from` of the first assignee_changed activity. Issues created
+  // with an assignee already set don't generate an `assignee_changed` event for
+  // that initial assignment, so without this seed we'd miss the original
+  // assignee and the buttons would never render until a *second* reassignment.
+  let seeded = false;
   for (const t of timeline || []) {
     if (t.type !== 'activity' || t.action !== 'assignee_changed') continue;
     const d = t.details || {};
+    if (!seeded) {
+      if (d.from_id) seq.push({ type: d.from_type, id: d.from_id });
+      else seq.push({ type: null, id: null });
+      seeded = true;
+    }
     if (d.to_id) seq.push({ type: d.to_type, id: d.to_id });
     else seq.push({ type: null, id: null });
   }
@@ -1896,7 +1906,8 @@ function deriveQuickTargets(timeline, currentType, currentId) {
 //
 //   fix-pr-conflicts → mentions previousDev (agent), triggers a run
 //   continue         → mentions previous (agent or member)
-//   approved         → plain text, no mention link, no run trigger
+//   approved         → mentions previous when it's an agent (so the planning
+//                      agent's Phase 2 actually starts); plain text otherwise
 //
 // Buttons render only when their target exists; the row collapses to empty
 // when neither applies.
@@ -1916,9 +1927,13 @@ function renderQuickActions(issue, timeline) {
       data-target-name="${escapeHtml(t.previous.name)}"
       title="Send '@${escapeHtml(t.previous.name)} continue' as a comment">
       ${escapeHtml(t.previous.name)}: continue</button>`);
+    const approvedTitle = t.previous.type === 'agent'
+      ? `Send '@${escapeHtml(t.previous.name)} Approved.' as a comment (triggers a new run)`
+      : `Send 'Approved.' as a comment (no run trigger)`;
     out.push(`<button type="button" data-action="approved"
+      data-target-type="${t.previous.type}" data-target-id="${t.previous.id}"
       data-target-name="${escapeHtml(t.previous.name)}"
-      title="Send 'Approved.' as a comment (no run trigger)">
+      title="${approvedTitle}">
       ${escapeHtml(t.previous.name)}: approved</button>`);
   }
   return out.join('');
@@ -1928,9 +1943,11 @@ function renderQuickActions(issue, timeline) {
 // safe to call after every re-render of the #quick-actions row.
 //
 // fix-pr-conflicts / continue post a comment with an agent-mention link, which
-// the server treats as a run-trigger. "approved" posts plain text only; the
-// recipient is shown in the button label, but no mention is included so an
-// acknowledgement doesn't kick off another agent run.
+// the server treats as a run-trigger. "approved" mentions the target only when
+// it's an agent — plan-then-implement agents (Architect, Lab Engineer, etc.)
+// hand back to the human with `in_review` and only re-enter Phase 2 on a
+// mention, so a plain "Approved." would strand the proposal. For member targets
+// we keep it plain text — mentioning yourself is noise, no run-trigger needed.
 function wireQuickActions(issue) {
   const all = $$('#quick-actions button');
   const post = async (content) => {
@@ -1956,7 +1973,11 @@ function wireQuickActions(issue) {
       const id = btn.dataset.targetId;
       if (action === 'fix-pr-conflicts') post(`[@${name}](mention://${type}/${id}) fix PR conflicts`);
       else if (action === 'continue') post(`[@${name}](mention://${type}/${id}) continue`);
-      else if (action === 'approved') post(`Approved.`);
+      else if (action === 'approved') {
+        post(type === 'agent'
+          ? `[@${name}](mention://${type}/${id}) Approved.`
+          : `Approved.`);
+      }
     };
   });
 }
