@@ -177,6 +177,43 @@
     cursor: pointer; min-height: 32px;
   }
   .composer .quick-actions button:disabled { opacity: 0.5; cursor: default; }
+  .composer .attach-row {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;
+  }
+  .composer .attach-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px 6px 4px 8px; font-size: 12px;
+    max-width: 100%;
+  }
+  .composer .attach-chip .name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;
+  }
+  .composer .attach-chip .size { color: var(--muted); }
+  .composer .attach-chip .x {
+    background: transparent; color: var(--muted); border: 0;
+    padding: 2px 6px; min-height: 0; min-width: 0; font-size: 14px;
+    line-height: 1; border-radius: 4px;
+  }
+  .composer .attach-chip .x:hover { background: var(--border); color: var(--text); }
+  .attach-btn { background: var(--surface-2); color: var(--text); }
+  .attachments {
+    display: flex; flex-direction: column; gap: 6px; margin-top: 8px;
+  }
+  .attachments img.thumb {
+    max-width: 100%; max-height: 280px; border-radius: 8px;
+    border: 1px solid var(--border); display: block; cursor: pointer;
+  }
+  .attachments .file-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    color: var(--accent-2); text-decoration: none; max-width: 100%;
+  }
+  .attachments .file-chip .name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .attachments .file-chip .size { color: var(--muted); font-size: 12px; }
   .mention-picker {
     position: absolute; bottom: calc(100% + 4px); left: 0; right: 0;
     background: var(--surface); border: 1px solid var(--border);
@@ -341,6 +378,70 @@ async function api(path, opts = {}) {
     throw new Error(msg);
   }
   return body;
+}
+
+// Upload one file to /api/upload-file. Returns the AttachmentResponse JSON
+// (with an `id` field that the caller passes back as `attachment_ids` on the
+// subsequent comment / issue create).
+//
+// Note: do not set Content-Type — the browser must set the multipart boundary.
+async function uploadFile(file, opts = {}) {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  const r = await fetch(apiBase() + '/api/upload-file', {
+    method: 'POST',
+    headers: authHeaders({}, opts.workspaceSlug),
+    body: fd,
+  });
+  const ct = r.headers.get('content-type') || '';
+  const body = ct.includes('application/json') ? await r.json() : await r.text();
+  if (!r.ok) {
+    const msg = (body && body.error) ? body.error : (typeof body === 'string' ? body : `upload failed (HTTP ${r.status})`);
+    throw new Error(msg);
+  }
+  return body;
+}
+
+function fmtBytes(n) {
+  if (typeof n !== 'number' || !isFinite(n) || n < 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+// Render the row of pending-upload chips above the composer textarea.
+// Pure: takes the array of File objects, returns innerHTML for a div whose
+// children carry data-idx for click delegation.
+function renderAttachChips(files) {
+  if (!files || !files.length) return '';
+  return files.map((f, i) => `
+    <span class="attach-chip" data-idx="${i}">
+      <span class="name">${escapeHtml(f.name)}</span>
+      <span class="size">(${fmtBytes(f.size)})</span>
+      <button type="button" class="x" data-idx="${i}" aria-label="Remove">×</button>
+    </span>`).join('');
+}
+
+// Render the attached-files block under a comment body or issue description.
+// `atts` is the AttachmentResponse[] returned by the server.
+//   - image/*  → inline thumbnail that opens the full image in a new tab
+//   - other    → download chip with filename + size
+function renderAttachments(atts) {
+  if (!atts || !atts.length) return '';
+  return `<div class="attachments">${atts.map(a => {
+    const url = a.download_url || a.url || '';
+    const isImg = (a.content_type || '').startsWith('image/');
+    if (isImg) {
+      return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">
+        <img class="thumb" src="${escapeHtml(url)}" alt="${escapeHtml(a.filename || '')}" loading="lazy">
+      </a>`;
+    }
+    return `<a class="file-chip" href="${escapeHtml(url)}" target="_blank" rel="noopener" download>
+      📎 <span class="name">${escapeHtml(a.filename || 'file')}</span>
+      <span class="size">${escapeHtml(fmtBytes(a.size_bytes || 0))}</span>
+    </a>`;
+  }).join('')}</div>`;
 }
 
 // ===================== Event bus + WebSocket =====================
@@ -1742,19 +1843,22 @@ function renderIssueDetail(i, timeline) {
     </div>
     <div id="active-banner">${renderActiveBanner(i.id)}</div>
     <div id="activity-log">${renderActivityLog(i.id)}</div>
-    ${i.description ? `<div class="comment"><div class="body">${renderCommentBody(i.description)}</div></div>` : ''}
+    ${i.description || (i.attachments && i.attachments.length) ? `<div class="comment">${i.description ? `<div class="body">${renderCommentBody(i.description)}</div>` : ''}${renderAttachments(i.attachments)}</div>` : ''}
 
     <h3 style="font-size:14px;color:var(--muted);margin:20px 0 8px;">History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})</h3>
     <div id="comments">${timeline.map(renderTimelineEntry).join('') || '<div class="empty" style="padding:16px;">No activity yet.</div>'}</div>
 
     <div class="composer" style="margin-top:16px;">
       <div id="quick-actions" class="quick-actions">${renderQuickActions(i, timeline)}</div>
+      <div id="attach-row" class="attach-row"></div>
       <textarea id="composer-text" placeholder="Comment… (type @ to mention an agent or member)"></textarea>
       <div id="picker"></div>
       <div class="actions">
         <button id="send" style="flex:1;">Send</button>
+        <button id="attach-btn" class="attach-btn icon" title="Attach file" aria-label="Attach file">📎</button>
         <button id="mention-btn" class="ghost icon" title="Mention">@</button>
       </div>
+      <input id="attach-input" type="file" multiple style="display:none;">
     </div>
     <button id="go-to-bottom" aria-label="Scroll to latest" title="Scroll to latest" style="display:none;position:fixed;right:16px;bottom:calc(72px + var(--safe-bottom) + var(--vv-bottom) + 68px);z-index:9;width:44px;height:44px;min-height:44px;padding:0;border-radius:22px;background:var(--surface);color:var(--text);border:1px solid var(--border);box-shadow:0 4px 12px rgba(0,0,0,0.25);font-size:20px;line-height:1;">↓</button>
     <button id="go-to-top" aria-label="Scroll to top" title="Scroll to top" style="display:none;position:fixed;right:16px;bottom:calc(72px + var(--safe-bottom) + var(--vv-bottom) + 12px);z-index:9;width:44px;height:44px;min-height:44px;padding:0;border-radius:22px;background:var(--surface);color:var(--text);border:1px solid var(--border);box-shadow:0 4px 12px rgba(0,0,0,0.25);font-size:20px;line-height:1;">↑</button>
@@ -1825,6 +1929,7 @@ function renderTimelineEntry(t) {
       created_at: t.created_at,
       reactions: t.reactions || [],
       type: t.comment_type || 'comment',
+      attachments: t.attachments || [],
     });
   }
   if (t.type === 'activity') return renderActivityEntry(t);
@@ -1835,6 +1940,11 @@ function renderCommentEl(c) {
   const who = c.author_type === 'agent'
     ? (state.agentsById[c.author_id]?.name || 'agent')
     : (state.membersById[c.author_id]?.name || state.membersById[c.author_id]?.email || 'member');
+  // Body may be a single space (image-only comments — see send handler). When
+  // the rendered body collapses to whitespace, hide it so attachments stand
+  // alone instead of leaving a blank line above the thumbnails.
+  const bodyHtml = renderCommentBody(c.content);
+  const bodyTrimmed = (c.content || '').trim();
   return `
     <div class="comment">
       <div class="who">
@@ -1842,7 +1952,8 @@ function renderCommentEl(c) {
         <span class="badge">${c.author_type}</span>
         <span style="margin-left:auto;">${fmtDate(c.created_at)}</span>
       </div>
-      <div class="body">${renderCommentBody(c.content)}</div>
+      ${bodyTrimmed ? `<div class="body">${bodyHtml}</div>` : ''}
+      ${renderAttachments(c.attachments)}
     </div>`;
 }
 
@@ -2124,16 +2235,57 @@ function wireIssueDetail(app, issue, timeline) {
   };
   wireQuickActions(issue);
 
-  $('#send').onclick = async () => {
+  // Pending file attachments for the next comment send. Plain File[] —
+  // uploaded one by one when Send is tapped. Removing a chip just splices.
+  const pendingFiles = [];
+  const attachInput = $('#attach-input');
+  const attachRow = $('#attach-row');
+  const renderChips = () => { attachRow.innerHTML = renderAttachChips(pendingFiles); };
+  $('#attach-btn').onclick = () => attachInput.click();
+  attachInput.onchange = () => {
+    for (const f of attachInput.files || []) pendingFiles.push(f);
+    attachInput.value = '';
+    renderChips();
+  };
+  attachRow.addEventListener('click', (e) => {
+    const btn = e.target.closest('button.x');
+    if (!btn) return;
+    const idx = Number(btn.dataset.idx);
+    if (Number.isInteger(idx)) {
+      pendingFiles.splice(idx, 1);
+      renderChips();
+    }
+  });
+
+  const sendBtn = $('#send');
+  const setSendLabel = (txt) => { sendBtn.textContent = txt; };
+  sendBtn.onclick = async () => {
     const content = ta.value.trim();
-    if (!content) return;
-    $('#send').disabled = true;
+    if (!content && pendingFiles.length === 0) return;
+    sendBtn.disabled = true;
     try {
+      const attachmentIds = [];
+      for (let i = 0; i < pendingFiles.length; i++) {
+        setSendLabel(`Uploading ${i + 1}/${pendingFiles.length}…`);
+        const att = await uploadFile(pendingFiles[i]);
+        attachmentIds.push(att.id);
+      }
+      setSendLabel('Send');
+      // Server requires content !== "" — substitute a single space when the
+      // user only wanted to attach files. The desktop client uses a similar
+      // workaround for image-only comments.
+      const body = {
+        content: content || ' ',
+        type: 'comment',
+        attachment_ids: attachmentIds,
+      };
       await api(`/api/issues/${issue.id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content, type: 'comment' }),
+        body: JSON.stringify(body),
       });
       ta.value = '';
+      pendingFiles.length = 0;
+      renderChips();
       closePicker();
       // Re-fetch timeline (comments + activities). Live event listeners will
       // also fire from the WS broadcast, but a direct re-fetch removes the
@@ -2147,8 +2299,9 @@ function wireIssueDetail(app, issue, timeline) {
       toast('Sent');
     } catch (e) {
       toast(e.message);
+      setSendLabel('Send');
     } finally {
-      $('#send').disabled = false;
+      sendBtn.disabled = false;
     }
   };
 }
@@ -2182,6 +2335,12 @@ async function viewNewIssue(app) {
       </select></div>
     </div>
     <div class="field"><label>Assignee</label><select id="assignee">${assigneeOptions}</select></div>
+    <div class="field">
+      <label>Attachments</label>
+      <div id="ni-attach-row" class="attach-row" style="margin-bottom:6px;"></div>
+      <button type="button" id="ni-attach-btn" class="ghost" style="width:100%;">📎 Attach files</button>
+      <input id="ni-attach-input" type="file" multiple style="display:none;">
+    </div>
     <button id="create" style="width:100%;">Create</button>
   </main>${c.nav}`;
   // Switching workspace must reload agents/members so the assignee dropdown
@@ -2194,7 +2353,31 @@ async function viewNewIssue(app) {
       render();
     }
   };
-  $('#create').onclick = async () => {
+  // Pending attachments for the new issue. Same chip-row UX as the comment
+  // composer; uploaded one by one when Create is tapped.
+  const niPending = [];
+  const niInput = $('#ni-attach-input');
+  const niRow = $('#ni-attach-row');
+  const niRender = () => { niRow.innerHTML = renderAttachChips(niPending); };
+  $('#ni-attach-btn').onclick = () => niInput.click();
+  niInput.onchange = () => {
+    for (const f of niInput.files || []) niPending.push(f);
+    niInput.value = '';
+    niRender();
+  };
+  niRow.addEventListener('click', (e) => {
+    const btn = e.target.closest('button.x');
+    if (!btn) return;
+    const idx = Number(btn.dataset.idx);
+    if (Number.isInteger(idx)) {
+      niPending.splice(idx, 1);
+      niRender();
+    }
+  });
+
+  const createBtn = $('#create');
+  const setCreateLabel = (txt) => { createBtn.textContent = txt; };
+  createBtn.onclick = async () => {
     const title = $('#title').value.trim();
     if (!title) return toast('Title required');
     const v = $('#assignee').value;
@@ -2208,8 +2391,16 @@ async function viewNewIssue(app) {
       priority: $('#priority').value,
     };
     if (v) { const [t, id] = v.split(':'); body.assignee_type = t; body.assignee_id = id; }
-    $('#create').disabled = true;
+    createBtn.disabled = true;
     try {
+      const attachmentIds = [];
+      for (let i = 0; i < niPending.length; i++) {
+        setCreateLabel(`Uploading ${i + 1}/${niPending.length}…`);
+        const att = await uploadFile(niPending[i], { workspaceSlug: wsSlug });
+        attachmentIds.push(att.id);
+      }
+      if (attachmentIds.length) body.attachment_ids = attachmentIds;
+      setCreateLabel('Create');
       const issue = await api('/api/issues', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -2225,7 +2416,8 @@ async function viewNewIssue(app) {
       navigate(`#/issue/${issue.id}`);
     } catch (e) {
       toast(e.message);
-      $('#create').disabled = false;
+      setCreateLabel('Create');
+      createBtn.disabled = false;
     }
   };
 }
