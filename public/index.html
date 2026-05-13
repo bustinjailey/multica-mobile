@@ -861,10 +861,19 @@ function setupView(app) {
   };
 }
 
+// Accept either a bare array or a `{workspaces: [...]}` envelope. Returns
+// null if the response shape can't be coerced — callers decide whether that
+// is a hard error or a silent skip.
+function normalizeWorkspaces(r) {
+  if (Array.isArray(r)) return r;
+  if (r && Array.isArray(r.workspaces)) return r.workspaces;
+  return null;
+}
+
 async function refreshWorkspaceList() {
   try {
-    const wss = await api('/api/workspaces');
-    if (Array.isArray(wss)) {
+    const wss = normalizeWorkspaces(await api('/api/workspaces'));
+    if (wss) {
       state.workspaces = wss;
       localStorage.setItem(LS.wsList, JSON.stringify(wss));
     }
@@ -937,10 +946,33 @@ function openIssueCard(issue) {
 
 async function workspacePicker(app) {
   app.innerHTML = `<div class="setup"><h1>Choose workspace</h1><div id="ws"></div></div>`;
+  const renderReauth = (msg) => {
+    $('#ws').innerHTML = `
+      <div class="err">${escapeHtml(msg)}</div>
+      <button id="reauth" class="danger" style="margin-top:12px;">Sign out &amp; re-enter token</button>
+    `;
+    const btn = document.getElementById('reauth');
+    if (btn) btn.onclick = () => {
+      localStorage.removeItem(LS.pat);
+      localStorage.removeItem(LS.ws);
+      localStorage.removeItem(LS.wsList);
+      state.workspace = null;
+      state.workspaces = [];
+      state.me = null;
+      render();
+    };
+  };
   try {
-    const wss = await api('/api/workspaces');
+    const wss = normalizeWorkspaces(await api('/api/workspaces'));
+    if (!wss) {
+      // 2xx response with an unexpected shape — most often happens when the
+      // backend wraps an auth/error condition without a non-2xx status. Surface
+      // a re-auth path instead of letting `.map` blow up.
+      renderReauth('Could not load workspaces — your session may have expired. Please re-enter your token.');
+      return;
+    }
     state.workspaces = wss;
-    if (Array.isArray(wss)) localStorage.setItem(LS.wsList, JSON.stringify(wss));
+    localStorage.setItem(LS.wsList, JSON.stringify(wss));
     const html = wss.map(w => `
       <button class="card" data-id="${w.id}" data-slug="${w.slug}" data-name="${escapeHtml(w.name)}" data-prefix="${w.issue_prefix||''}" style="text-align:left;width:100%;margin-bottom:8px;background:var(--surface);">
         <div class="title">${escapeHtml(w.name)}</div>
@@ -955,7 +987,7 @@ async function workspacePicker(app) {
       navigate('#/issues');
     });
   } catch (e) {
-    $('#ws').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
+    renderReauth(e.message || 'Failed to load workspaces.');
   }
 }
 
