@@ -388,16 +388,27 @@ async function api(path, opts = {}) {
 async function uploadFile(file, opts = {}) {
   const fd = new FormData();
   fd.append('file', file, file.name);
-  const r = await fetch(apiBase() + '/api/upload-file', {
-    method: 'POST',
-    headers: authHeaders({}, opts.workspaceSlug),
-    body: fd,
-  });
+  let r;
+  try {
+    r = await fetch(apiBase() + '/api/upload-file', {
+      method: 'POST',
+      headers: authHeaders({}, opts.workspaceSlug),
+      body: fd,
+    });
+  } catch (e) {
+    console.error('[upload] network error', file.name, e);
+    throw new Error(`${file.name}: network error (${e.message || 'fetch failed'})`);
+  }
   const ct = r.headers.get('content-type') || '';
   const body = ct.includes('application/json') ? await r.json() : await r.text();
   if (!r.ok) {
-    const msg = (body && body.error) ? body.error : (typeof body === 'string' ? body : `upload failed (HTTP ${r.status})`);
-    throw new Error(msg);
+    const msg = (body && body.error) ? body.error : (typeof body === 'string' ? body : `HTTP ${r.status}`);
+    console.error('[upload] server rejected', file.name, r.status, body);
+    throw new Error(`${file.name}: ${msg}`);
+  }
+  if (!body || typeof body !== 'object' || !body.id) {
+    console.error('[upload] response missing id', file.name, body);
+    throw new Error(`${file.name}: upload OK but server returned no attachment id`);
   }
   return body;
 }
@@ -2296,7 +2307,25 @@ function wireIssueDetail(app, issue, timeline) {
   const renderChips = () => { attachRow.innerHTML = renderAttachChips(pendingFiles); };
   $('#attach-btn').onclick = () => attachInput.click();
   attachInput.onchange = () => {
-    for (const f of attachInput.files || []) pendingFiles.push(f);
+    const picked = Array.from(attachInput.files || []);
+    if (picked.length === 0) {
+      // Some Android pickers return zero files when the user cancels; show
+      // nothing in that case. Only warn if the input had files but they all
+      // got rejected below.
+    }
+    let kept = 0;
+    let zeroByte = 0;
+    for (const f of picked) {
+      if (!f || f.size === 0) { zeroByte++; continue; }
+      pendingFiles.push(f);
+      kept++;
+    }
+    if (zeroByte > 0) {
+      console.error('[attach] skipped zero-byte file(s)', zeroByte, picked);
+      toast(`Skipped ${zeroByte} empty file${zeroByte === 1 ? '' : 's'} (0 bytes)`, 6000);
+    } else if (picked.length > 0 && kept === 0) {
+      toast('No files were attached', 6000);
+    }
     attachInput.value = '';
     renderChips();
   };
@@ -2351,7 +2380,8 @@ function wireIssueDetail(app, issue, timeline) {
       refreshQuickActions(issue, fresh || []);
       toast('Sent');
     } catch (e) {
-      toast(e.message);
+      console.error('[send] failed', e);
+      toast(e.message || 'Send failed', 6000);
       setSendLabel('Send');
     } finally {
       sendBtn.disabled = false;
@@ -2414,7 +2444,20 @@ async function viewNewIssue(app) {
   const niRender = () => { niRow.innerHTML = renderAttachChips(niPending); };
   $('#ni-attach-btn').onclick = () => niInput.click();
   niInput.onchange = () => {
-    for (const f of niInput.files || []) niPending.push(f);
+    const picked = Array.from(niInput.files || []);
+    let kept = 0;
+    let zeroByte = 0;
+    for (const f of picked) {
+      if (!f || f.size === 0) { zeroByte++; continue; }
+      niPending.push(f);
+      kept++;
+    }
+    if (zeroByte > 0) {
+      console.error('[attach] skipped zero-byte file(s)', zeroByte, picked);
+      toast(`Skipped ${zeroByte} empty file${zeroByte === 1 ? '' : 's'} (0 bytes)`, 6000);
+    } else if (picked.length > 0 && kept === 0) {
+      toast('No files were attached', 6000);
+    }
     niInput.value = '';
     niRender();
   };
@@ -2468,7 +2511,8 @@ async function viewNewIssue(app) {
       }
       navigate(`#/issue/${issue.id}`);
     } catch (e) {
-      toast(e.message);
+      console.error('[create] failed', e);
+      toast(e.message || 'Create failed', 6000);
       setCreateLabel('Create');
       createBtn.disabled = false;
     }
