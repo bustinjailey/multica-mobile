@@ -2000,45 +2000,97 @@ function renderCommentEl(c) {
     </div>`;
 }
 
-// Derive quick-action targets from the timeline. Walks `assignee_changed`
-// activities chronologically to reconstruct the assignment sequence, then
-// picks:
-//   previousAssignee    — most recent assignee (any kind) before the current one
-//   previousDevAssignee — most recent agent assignee before the current one
+// Statuses that indicate active work vs review/handoff. The "fix PR conflicts"
+// button targets the dev who *wrote* the PR — i.e. the prior agent who held
+// the issue while doing implementation work, not the one who held it for review.
+const QA_WORK_STATUSES = new Set(['in_progress', 'todo', 'backlog']);
+
+// Derive quick-action targets from the timeline. Walks `assignee_changed` and
+// `status_changed` activities chronologically to reconstruct (assignee, status)
+// intervals, then picks:
+//   previous    — most recent assignee (any kind) before the current one
+//   previousDev — most recent prior agent who held the issue while status was
+//                 a "work" status (in_progress/todo/backlog), not a review
+//                 status (in_review/blocked)
 //
-// "Dev assignee" is the agent that wrote the PR. We don't have explicit
-// PR linkage in Multica, so we approximate with "most recent prior agent
-// assignee" — in the common Bustin Lab / Snapview workflow (architect plans,
-// engineer implements + opens PR, hands to reviewer), this resolves to the
-// PR-opening agent.
+// Why not just "most recent prior agent"? The common Snapview chain is
+//
+//   Architect → LeadDev → LeadTester → @human
+//
+// where LeadTester only ever held it in_review (they read the PR and reassign).
+// The agent who can actually fix PR conflicts is LeadDev, not LeadTester — so we
+// skip back past assignees whose tenure was purely review-status. If no agent
+// ever held it in a work status (rare; happens when devs don't flip status
+// before reassigning), fall back to the most recent prior agent.
 function deriveQuickTargets(timeline, currentType, currentId) {
-  const seq = [];
-  // Seed with the `from` of the first assignee_changed activity. Issues created
-  // with an assignee already set don't generate an `assignee_changed` event for
-  // that initial assignment, so without this seed we'd miss the original
-  // assignee and the buttons would never render until a *second* reassignment.
-  let seeded = false;
+  // Pass 1: find the initial assignee and initial status from the `from` field
+  // of the first event of each kind. Issues created with an assignee or status
+  // already set don't emit a `*_changed` event for that initial state, so without
+  // this we'd lose the very first interval.
+  let initialAssignee = null;
+  let initialStatus = null;
+  let foundFirstAssignee = false;
+  let foundFirstStatus = false;
   for (const t of timeline || []) {
-    if (t.type !== 'activity' || t.action !== 'assignee_changed') continue;
+    if (t.type !== 'activity') continue;
     const d = t.details || {};
-    if (!seeded) {
-      if (d.from_id) seq.push({ type: d.from_type, id: d.from_id });
-      else seq.push({ type: null, id: null });
-      seeded = true;
+    if (!foundFirstAssignee && t.action === 'assignee_changed') {
+      initialAssignee = d.from_id ? { type: d.from_type, id: d.from_id } : null;
+      foundFirstAssignee = true;
     }
-    if (d.to_id) seq.push({ type: d.to_type, id: d.to_id });
-    else seq.push({ type: null, id: null });
+    if (!foundFirstStatus && t.action === 'status_changed') {
+      initialStatus = d.from || null;
+      foundFirstStatus = true;
+    }
+    if (foundFirstAssignee && foundFirstStatus) break;
   }
+
+  // Pass 2: build intervals. Each `assignee_changed` opens a new interval;
+  // `status_changed` updates the current interval's `workStatusSeen` flag if
+  // the new status is a work status.
+  let curStatus = initialStatus;
+  const intervals = [];
+  const openInterval = (assignee) => {
+    intervals.push({
+      type: assignee?.type ?? null,
+      id: assignee?.id ?? null,
+      workStatusSeen: !!(curStatus && QA_WORK_STATUSES.has(curStatus)),
+    });
+  };
+  openInterval(initialAssignee);
+  for (const t of timeline || []) {
+    if (t.type !== 'activity') continue;
+    const d = t.details || {};
+    if (t.action === 'assignee_changed') {
+      const to = d.to_id ? { type: d.to_type, id: d.to_id } : null;
+      openInterval(to);
+    } else if (t.action === 'status_changed') {
+      curStatus = d.to || null;
+      const cur = intervals[intervals.length - 1];
+      if (cur && curStatus && QA_WORK_STATUSES.has(curStatus)) cur.workStatusSeen = true;
+    }
+  }
+
   const sameAsCurrent = (e) => e && e.type === currentType && e.id === currentId;
   const isUsable = (e) => e && e.id && !sameAsCurrent(e);
+
   let previous = null;
-  for (let i = seq.length - 1; i >= 0; i--) {
-    if (isUsable(seq[i])) { previous = seq[i]; break; }
+  for (let i = intervals.length - 1; i >= 0; i--) {
+    if (isUsable(intervals[i])) { previous = intervals[i]; break; }
   }
   let previousDev = null;
-  for (let i = seq.length - 1; i >= 0; i--) {
-    if (isUsable(seq[i]) && seq[i].type === 'agent') { previousDev = seq[i]; break; }
+  for (let i = intervals.length - 1; i >= 0; i--) {
+    const iv = intervals[i];
+    if (isUsable(iv) && iv.type === 'agent' && iv.workStatusSeen) { previousDev = iv; break; }
   }
+  // Fallback: no agent ever held a work status — use most recent prior agent.
+  if (!previousDev) {
+    for (let i = intervals.length - 1; i >= 0; i--) {
+      const iv = intervals[i];
+      if (isUsable(iv) && iv.type === 'agent') { previousDev = iv; break; }
+    }
+  }
+
   const resolveName = (e) => {
     if (!e) return null;
     if (e.type === 'agent') return state.agentsById[e.id]?.name || null;
