@@ -735,12 +735,42 @@ const routes = [
   { match: /^#\/settings$/, view: viewSettings },
 ];
 
+// Per-view scroll memory so back-navigation lands the user where they left off.
+// Keyed by the route portion of the hash (query string stripped so push-notif
+// `?ws=...` doesn't fragment the cache). Set scrollRestoration=manual because
+// the browser's auto restore fights our innerHTML-based view swap.
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+const scrollMemory = new Map();
+const SCROLL_MEMORY_MAX = 32;
+let lastRenderedHash = null;
+function hashKey(h) { return (h || '').split('?')[0]; }
+function rememberScroll() {
+  if (lastRenderedHash == null) return;
+  const y = window.scrollY || window.pageYOffset || 0;
+  scrollMemory.set(lastRenderedHash, y);
+  if (scrollMemory.size > SCROLL_MEMORY_MAX) {
+    scrollMemory.delete(scrollMemory.keys().next().value);
+  }
+}
+function restoreScroll(hash) {
+  const y = scrollMemory.get(hash);
+  if (y == null) { window.scrollTo(0, 0); return; }
+  // Two passes: once immediately, once after the next frame in case async
+  // content (images, late-arriving rows) extended the document height.
+  window.scrollTo(0, y);
+  requestAnimationFrame(() => window.scrollTo(0, y));
+}
+
 function navigate(hash) {
   if (location.hash !== hash) location.hash = hash;
   else render();
 }
 
 async function render() {
+  // Snapshot the outgoing view's scroll BEFORE any DOM mutation, so back-nav
+  // can restore it. lastRenderedHash is only set after a route successfully
+  // mounted, so setup/workspace-picker pre-states don't pollute the cache.
+  rememberScroll();
   const app = $('#app');
   const pat = localStorage.getItem(LS.pat);
   if (!pat) return setupView(app);
@@ -791,10 +821,14 @@ async function render() {
       // span. connectWS() short-circuits when the socket is already open, so
       // without this the indicator stays blank after every navigation.
       updateConnIndicator();
+      const key = hashKey(hash);
+      lastRenderedHash = key;
+      restoreScroll(key);
       return;
     }
   }
   app.innerHTML = `<div class="empty">Not found</div>`;
+  lastRenderedHash = null;
 }
 
 window.addEventListener('hashchange', render);
@@ -2188,12 +2222,12 @@ function wireIssueDetail(app, issue, timeline) {
     bottomBtn.onclick = () => {
       const list = document.getElementById('comments');
       const last = list?.lastElementChild;
-      if (last) last.scrollIntoView({ behavior: 'smooth', block: 'end' });
-      else list?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      if (last) last.scrollIntoView({ block: 'end' });
+      else list?.scrollIntoView({ block: 'end' });
     };
   }
   if (topBtn) {
-    topBtn.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+    topBtn.onclick = () => window.scrollTo(0, 0);
   }
 
   let observer = null;
