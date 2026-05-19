@@ -2004,13 +2004,17 @@ function renderCommentEl(c) {
 // activities chronologically to reconstruct the assignment sequence, then
 // picks:
 //   previousAssignee    — most recent assignee (any kind) before the current one
-//   previousDevAssignee — most recent agent assignee before the current one
+//   previousDevAssignee — most recent *non-tester* agent assignee before the
+//                         current one. Testers (Lead Tester, Exploratory Tester)
+//                         are skipped so "fix PR conflicts" always routes to
+//                         the dev that opened the PR, not the tester that just
+//                         handed it back.
 //
 // "Dev assignee" is the agent that wrote the PR. We don't have explicit
 // PR linkage in Multica, so we approximate with "most recent prior agent
-// assignee" — in the common Bustin Lab / Snapview workflow (architect plans,
-// engineer implements + opens PR, hands to reviewer), this resolves to the
-// PR-opening agent.
+// assignee whose name doesn't contain 'tester'" — in the common Bustin Lab /
+// Snapview workflow (architect plans, engineer implements + opens PR, hands
+// to tester, tester hands back), this resolves to the PR-opening agent.
 function deriveQuickTargets(timeline, currentType, currentId) {
   const seq = [];
   // Seed with the `from` of the first assignee_changed activity. Issues created
@@ -2035,9 +2039,17 @@ function deriveQuickTargets(timeline, currentType, currentId) {
   for (let i = seq.length - 1; i >= 0; i--) {
     if (isUsable(seq[i])) { previous = seq[i]; break; }
   }
+  const isTesterAgent = (e) => {
+    if (!e || e.type !== 'agent') return false;
+    const name = state.agentsById[e.id]?.name || '';
+    return /tester/i.test(name);
+  };
   let previousDev = null;
   for (let i = seq.length - 1; i >= 0; i--) {
-    if (isUsable(seq[i]) && seq[i].type === 'agent') { previousDev = seq[i]; break; }
+    if (isUsable(seq[i]) && seq[i].type === 'agent' && !isTesterAgent(seq[i])) {
+      previousDev = seq[i];
+      break;
+    }
   }
   const resolveName = (e) => {
     if (!e) return null;
