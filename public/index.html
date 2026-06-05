@@ -2003,7 +2003,10 @@ function renderCommentEl(c) {
 // Derive quick-action targets from the timeline. Walks `assignee_changed`
 // activities chronologically to reconstruct the assignment sequence, then
 // picks:
-//   previousAssignee    — most recent assignee (any kind) before the current one
+//   previousAgent       — most recent *agent* assignee before the current one.
+//                         Members are never targets: continue/approved are
+//                         agent-directed run-triggers, so tagging the human
+//                         (often yourself) makes no sense.
 //   previousDevAssignee — most recent *non-tester* agent assignee before the
 //                         current one. Testers (Lead Tester, Exploratory Tester)
 //                         are skipped so "fix PR conflicts" always routes to
@@ -2035,9 +2038,13 @@ function deriveQuickTargets(timeline, currentType, currentId) {
   }
   const sameAsCurrent = (e) => e && e.type === currentType && e.id === currentId;
   const isUsable = (e) => e && e.id && !sameAsCurrent(e);
-  let previous = null;
+  // continue / approved are agent-directed (continue is a run-trigger; approved
+  // re-enters a planning agent's Phase 2), so their target is the most recent
+  // prior *agent* assignee — never a member. Testers are fine here, so unlike
+  // previousDev we don't skip them.
+  let previousAgent = null;
   for (let i = seq.length - 1; i >= 0; i--) {
-    if (isUsable(seq[i])) { previous = seq[i]; break; }
+    if (isUsable(seq[i]) && seq[i].type === 'agent') { previousAgent = seq[i]; break; }
   }
   const isTesterAgent = (e) => {
     if (!e || e.type !== 'agent') return false;
@@ -2061,7 +2068,7 @@ function deriveQuickTargets(timeline, currentType, currentId) {
     return null;
   };
   return {
-    previous: previous && resolveName(previous) ? { ...previous, name: resolveName(previous) } : null,
+    previousAgent: previousAgent && resolveName(previousAgent) ? { ...previousAgent, name: resolveName(previousAgent) } : null,
     previousDev: previousDev && resolveName(previousDev) ? { ...previousDev, name: resolveName(previousDev) } : null,
   };
 }
@@ -2071,9 +2078,9 @@ function deriveQuickTargets(timeline, currentType, currentId) {
 // to post the right comment when tapped — no extra state lookup at click time.
 //
 //   fix-pr-conflicts → mentions previousDev (agent), triggers a run
-//   continue         → mentions previous (agent or member)
-//   approved         → mentions previous when it's an agent (so the planning
-//                      agent's Phase 2 actually starts); plain text otherwise
+//   continue         → mentions previousAgent, triggers a run
+//   approved         → mentions previousAgent so the planning agent's Phase 2
+//                      actually starts (always an agent — never the human)
 //
 // Buttons render only when their target exists; the row collapses to empty
 // when neither applies.
@@ -2087,20 +2094,18 @@ function renderQuickActions(issue, timeline) {
       title="Send '@${escapeHtml(t.previousDev.name)} fix PR conflicts' as a comment">
       ${escapeHtml(t.previousDev.name)}: fix PR conflicts</button>`);
   }
-  if (t.previous) {
+  if (t.previousAgent) {
+    const a = t.previousAgent;
     out.push(`<button type="button" data-action="continue"
-      data-target-type="${t.previous.type}" data-target-id="${t.previous.id}"
-      data-target-name="${escapeHtml(t.previous.name)}"
-      title="Send '@${escapeHtml(t.previous.name)} continue' as a comment">
-      ${escapeHtml(t.previous.name)}: continue</button>`);
-    const approvedTitle = t.previous.type === 'agent'
-      ? `Send '@${escapeHtml(t.previous.name)} Approved.' as a comment (triggers a new run)`
-      : `Send 'Approved.' as a comment (no run trigger)`;
+      data-target-type="${a.type}" data-target-id="${a.id}"
+      data-target-name="${escapeHtml(a.name)}"
+      title="Send '@${escapeHtml(a.name)} continue' as a comment">
+      ${escapeHtml(a.name)}: continue</button>`);
     out.push(`<button type="button" data-action="approved"
-      data-target-type="${t.previous.type}" data-target-id="${t.previous.id}"
-      data-target-name="${escapeHtml(t.previous.name)}"
-      title="${approvedTitle}">
-      ${escapeHtml(t.previous.name)}: approved</button>`);
+      data-target-type="${a.type}" data-target-id="${a.id}"
+      data-target-name="${escapeHtml(a.name)}"
+      title="Send '@${escapeHtml(a.name)} Approved.' as a comment (triggers a new run)">
+      ${escapeHtml(a.name)}: approved</button>`);
   }
   return out.join('');
 }
@@ -2108,12 +2113,11 @@ function renderQuickActions(issue, timeline) {
 // Wire (or re-wire) click handlers on the quick-action buttons. Idempotent —
 // safe to call after every re-render of the #quick-actions row.
 //
-// fix-pr-conflicts / continue post a comment with an agent-mention link, which
-// the server treats as a run-trigger. "approved" mentions the target only when
-// it's an agent — plan-then-implement agents (Architect, Lab Engineer, etc.)
-// hand back to the human with `in_review` and only re-enter Phase 2 on a
-// mention, so a plain "Approved." would strand the proposal. For member targets
-// we keep it plain text — mentioning yourself is noise, no run-trigger needed.
+// All three actions target an agent and post a comment with an agent-mention
+// link, which the server treats as a run-trigger. "approved" must mention the
+// agent (not be plain text): plan-then-implement agents (Architect, Lab
+// Engineer, etc.) hand back to the human with `in_review` and only re-enter
+// Phase 2 on a mention, so a plain "Approved." would strand the proposal.
 function wireQuickActions(issue) {
   const all = $$('#quick-actions button');
   const post = async (content) => {
@@ -2139,11 +2143,7 @@ function wireQuickActions(issue) {
       const id = btn.dataset.targetId;
       if (action === 'fix-pr-conflicts') post(`[@${name}](mention://${type}/${id}) fix PR conflicts`);
       else if (action === 'continue') post(`[@${name}](mention://${type}/${id}) continue`);
-      else if (action === 'approved') {
-        post(type === 'agent'
-          ? `[@${name}](mention://${type}/${id}) Approved.`
-          : `Approved.`);
-      }
+      else if (action === 'approved') post(`[@${name}](mention://${type}/${id}) Approved.`);
     };
   });
 }
