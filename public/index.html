@@ -904,23 +904,19 @@ function activeScope() {
 // path; 'all' = concurrent fan-out, results tagged with `_workspace` so the
 // renderer can show which workspace each issue lives in.
 async function fetchIssuesScoped(filter) {
-  const params = buildIssueQuery(filter);
   const scope = activeScope();
   if (scope === 'all') {
     const list = state.workspaces.length ? state.workspaces : (state.workspace ? [state.workspace] : []);
     const all = await Promise.all(list.map(async ws => {
       try {
-        const slug = ws.slug;
-        const r = await api(`/api/issues?${params}`, { workspaceSlug: slug });
-        const arr = Array.isArray(r) ? r : (r.issues || []);
+        const arr = await fetchIssueWindow(filter, ws.slug);
         return arr.map(i => ({ ...i, _workspace: { id: ws.id, slug: ws.slug, name: ws.name } }));
       } catch { return []; }
     }));
     return all.flat();
   }
   const slug = scope?.slug || state.workspace?.slug;
-  const r = await api(`/api/issues?${params}`, { workspaceSlug: slug });
-  const arr = Array.isArray(r) ? r : (r.issues || []);
+  const arr = await fetchIssueWindow(filter, slug);
   // Tag with the active workspace too so the click handler has uniform info.
   const ws = scope || state.workspace;
   return ws ? arr.map(i => ({ ...i, _workspace: { id: ws.id, slug: ws.slug, name: ws.name } })) : arr;
@@ -1168,18 +1164,59 @@ function writeFilter(f) {
   sessionStorage.setItem(FILTER_LS.status, f.status);
   sessionStorage.setItem(FILTER_LS.sort, f.sort);
 }
-function buildIssueQuery(filter) {
-  const params = new URLSearchParams();
-  params.set('limit', '200');
-  if (filter.scope === 'mine' && state.me?.id) {
-    params.set('assignee_type', 'member');
-    params.set('assignee_id', state.me.id);
+// One URLSearchParams per server request for a filter. The server caps
+// `limit` at 100 and the unfiltered ordering buries open issues behind
+// recently-churned terminal ones in large workspaces, so a single unfiltered
+// window routinely misses every open issue. 'open'/'any' therefore fan out
+// one server-side request per non-terminal status (each tiny) instead of
+// client-filtering one capped page. The server rejects comma-separated
+// multi-status values, so it has to be one request per status.
+function buildIssueQueries(filter) {
+  const base = () => {
+    const p = new URLSearchParams();
+    p.set('limit', '100'); // server cap — asking for more is silently downgraded
+    if (filter.scope === 'mine' && state.me?.id) {
+      p.set('assignee_type', 'member');
+      p.set('assignee_id', state.me.id);
+    }
+    return p;
+  };
+  if (filter.status === 'open' || filter.status === 'any') {
+    const queries = [...NON_TERMINAL_STATUSES].map(s => {
+      const p = base();
+      p.set('status', s);
+      return p;
+    });
+    // 'any' also shows terminal issues; that window stays best-effort (the
+    // 100-cap applies) but open issues are fully covered by the fan-out above.
+    if (filter.status === 'any') queries.push(base());
+    return queries;
   }
-  // 'open' / 'any' are client-side filters: fetch unfiltered and let the JS
-  // path drop terminal states. Specific statuses still hit the server filter.
-  const isMeta = filter.status === 'open' || filter.status === 'any';
-  if (!isMeta) params.set('status', filter.status);
-  return params;
+  const p = base();
+  p.set('status', filter.status);
+  return [p];
+}
+// Run every query for the filter against one workspace and merge, deduping
+// by id ('any' overlaps the unfiltered window with the per-status results).
+// Per-request failures are tolerated unless nothing succeeded — then the
+// first error propagates so the view can show its error state.
+async function fetchIssueWindow(filter, slug) {
+  let firstErr = null;
+  const results = await Promise.all(buildIssueQueries(filter).map(async params => {
+    try {
+      const r = await api(`/api/issues?${params}`, { workspaceSlug: slug });
+      return Array.isArray(r) ? r : (r.issues || []);
+    } catch (e) { firstErr = firstErr || e; return []; }
+  }));
+  const seen = new Set();
+  const merged = [];
+  for (const i of results.flat()) {
+    if (!i || !i.id || seen.has(i.id)) continue;
+    seen.add(i.id);
+    merged.push(i);
+  }
+  if (!merged.length && firstErr) throw firstErr;
+  return merged;
 }
 function applyClientFilter(arr, filter) {
   if (filter.status === 'open') return arr.filter(i => NON_TERMINAL_STATUSES.has(i.status));
