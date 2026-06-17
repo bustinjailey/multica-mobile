@@ -45,7 +45,15 @@ your-multica.example.com {
 
 If you want to host the PWA on a *different* origin, the Multica backend's `CORS_ALLOWED_ORIGINS` env must include that origin.
 
-To ship a change, edit `public/index.html`, commit and push. Caddy reads files at request time, so a fresh checkout on the serving host is all that's needed (no reload).
+To ship a change: edit `public/index.html`, commit, and push to `main`. The serving host then needs to pull the update — Caddy serves files from disk at request time, but **`git pull` on the host is not automatic**. You need a sync mechanism on the box that serves the files (cron job, systemd timer, GitHub webhook, CI runner, or a manual `ssh … git pull`). Once the checkout is updated, Caddy picks up the new file on the next request without a reload.
+
+Minimum viable sync: a one-liner cron entry on the serving host, e.g.
+
+```cron
+*/5 * * * * cd /path/to/multica-mobile && git fetch -q && git reset --hard -q origin/main
+```
+
+Or wire a GitHub `push` webhook to a small endpoint that runs the same `git fetch && reset` — your call.
 
 ## First-time use
 
