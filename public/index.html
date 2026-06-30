@@ -1164,36 +1164,48 @@ function writeFilter(f) {
   sessionStorage.setItem(FILTER_LS.status, f.status);
   sessionStorage.setItem(FILTER_LS.sort, f.sort);
 }
-// One URLSearchParams per server request for a filter. The server caps
-// `limit` at 100 and the unfiltered ordering buries open issues behind
-// recently-churned terminal ones in large workspaces, so a single unfiltered
-// window routinely misses every open issue. 'open'/'any' therefore fan out
-// one server-side request per non-terminal status (each tiny) instead of
-// client-filtering one capped page. The server rejects comma-separated
-// multi-status values, so it has to be one request per status.
+// One URLSearchParams per server request for a filter. The generic list
+// endpoint caps `limit` at 100 and orders by position, so a single unfiltered
+// window buries open issues behind churned terminal ones in large workspaces.
+// 'open' sidesteps that entirely with the server's dedicated open_only query:
+// one request, no row cap, returns every non-done/cancelled issue. That
+// replaced the old five-requests-per-status fan-out — the round-trip count is
+// what made the board slow to load across workspaces. open_only is now exactly
+// `status NOT IN (done, cancelled)`, matching NON_TERMINAL_STATUSES, so the
+// historical blocked-exclusion drift that made us avoid it no longer applies.
 function buildIssueQueries(filter) {
   const base = () => {
     const p = new URLSearchParams();
-    p.set('limit', '100'); // server cap — asking for more is silently downgraded
     if (filter.scope === 'mine' && state.me?.id) {
       p.set('assignee_type', 'member');
       p.set('assignee_id', state.me.id);
     }
     return p;
   };
-  if (filter.status === 'open' || filter.status === 'any') {
-    const queries = [...NON_TERMINAL_STATUSES].map(s => {
-      const p = base();
-      p.set('status', s);
-      return p;
-    });
-    // 'any' also shows terminal issues; that window stays best-effort (the
-    // 100-cap applies) but open issues are fully covered by the fan-out above.
-    if (filter.status === 'any') queries.push(base());
-    return queries;
+  if (filter.status === 'open') {
+    const p = base();
+    p.set('open_only', 'true');
+    return [p];
   }
+  // 'any' = all open issues (complete, via open_only) plus a best-effort window
+  // of terminal ones (still subject to the 100-cap, newest first).
+  if (filter.status === 'any') {
+    const open = base();
+    open.set('open_only', 'true');
+    const terminal = base();
+    terminal.set('limit', '100'); // server cap — asking for more is silently downgraded
+    terminal.set('sort', 'created_at');
+    terminal.set('direction', 'desc');
+    return [open, terminal];
+  }
+  // A specific status hits the server filter newest-first, so when matches
+  // exceed the 100-row cap we keep the most recent (used by the board's Done
+  // lane and the list's per-status views).
   const p = base();
   p.set('status', filter.status);
+  p.set('limit', '100');
+  p.set('sort', 'created_at');
+  p.set('direction', 'desc');
   return [p];
 }
 // Run every query for the filter against one workspace and merge, deduping
@@ -1368,6 +1380,10 @@ async function viewIssues(app) {
 // snap-scroll on the lane container, so the user pages between columns
 // horizontally instead of trying to fit five lanes on a 380px screen.
 const BOARD_LANES = ['in_review', 'in_progress', 'blocked', 'todo', 'backlog'];
+// Done is rendered as a trailing lane but fetched separately from the open
+// lanes: it needs its own bounded, newest-first query (status=done) rather than
+// the open_only window, and it sits last so the active lanes lead.
+const BOARD_RENDER_LANES = [...BOARD_LANES, 'done'];
 
 // Snapshot the board's horizontal lane position + each lane's vertical card
 // scroll so a live re-render (active-task tick, issue create/update) doesn't
@@ -1447,12 +1463,18 @@ async function viewBoard(app) {
   const hydrateAbort = new AbortController();
   state.viewSubs.push(() => hydrateAbort.abort());
   try {
-    const raw = await fetchIssuesScoped({ ...filter, status: 'open' });
-    const open = raw.filter(i => NON_TERMINAL_STATUSES.has(i.status));
-    const byLane = Object.fromEntries(BOARD_LANES.map(s => [s, []]));
+    // Open lanes (open_only) and the bounded Done lane fetch in parallel.
+    const [rawOpen, rawDone] = await Promise.all([
+      fetchIssuesScoped({ ...filter, status: 'open' }),
+      fetchIssuesScoped({ ...filter, status: 'done' }),
+    ]);
+    const open = rawOpen.filter(i => NON_TERMINAL_STATUSES.has(i.status));
+    const done = rawDone.filter(i => i.status === 'done');
+    const byLane = Object.fromEntries(BOARD_RENDER_LANES.map(s => [s, []]));
     for (const i of open) if (byLane[i.status]) byLane[i.status].push(i);
-    for (const s of BOARD_LANES) byLane[s] = sortIssues(byLane[s], 'updated');
-    $('#board').innerHTML = BOARD_LANES.map(s => `
+    byLane.done = done;
+    for (const s of BOARD_RENDER_LANES) byLane[s] = sortIssues(byLane[s], 'updated');
+    $('#board').innerHTML = BOARD_RENDER_LANES.map(s => `
       <section class="lane" data-status="${s}" style="flex:0 0 86vw;max-width:340px;scroll-snap-align:start;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;">
         <header style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
           <span class="pill status-${s}">${prettyStatus(s)}</span>
@@ -1464,7 +1486,7 @@ async function viewBoard(app) {
             : '<div class="empty" style="padding:8px;font-size:12px;">Empty</div>'}
         </div>
       </section>`).join('');
-    const flat = open;
+    const flat = [...open, ...done];
     $$('#board .card').forEach(el => {
       const issue = flat.find(i => i.id === el.dataset.id);
       if (issue) el.onclick = () => openIssueCard(issue);
