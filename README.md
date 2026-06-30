@@ -45,7 +45,23 @@ your-multica.example.com {
 
 If you want to host the PWA on a *different* origin, the Multica backend's `CORS_ALLOWED_ORIGINS` env must include that origin.
 
-To ship a change, edit `public/index.html`, commit and push. Caddy reads files at request time, so a fresh checkout on the serving host is all that's needed (no reload).
+To ship a change: merge to `main`, then copy the updated static files into the serving host's web root. Caddy reads files at request time, so no reload or restart is needed — the next request serves the new file.
+
+### Bustin Lab deploy (concrete)
+
+The PWA is served by the internal Caddy on the **webapps LXC** (CTID 111, `192.168.1.180`, node `proxmox`) out of `/opt/apps/multica-mobile/public/`. There is **no git checkout on the host** — deploy is a file copy. From a machine with the merged `main` checked out:
+
+```bash
+# from a multica-mobile checkout on the merged main
+git fetch origin main && git checkout origin/main -- public/index.html
+scp public/index.html root@proxmox.bustinjailey.org:/tmp/mm-index.html
+ssh root@proxmox.bustinjailey.org '
+  pct push 111 /tmp/mm-index.html /opt/apps/multica-mobile/public/index.html
+  pct exec 111 -- chown webapp:webapp /opt/apps/multica-mobile/public/index.html
+  rm -f /tmp/mm-index.html'
+```
+
+Only `public/index.html` changes in a typical PR; copy any other changed files under `public/` (`sw.js`, `manifest.webmanifest`, icons) the same way. Note: `sw.js` is a service worker — installed PWAs may serve a cached shell until it updates, so hard-refresh on the phone if a change doesn't appear.
 
 ## First-time use
 
