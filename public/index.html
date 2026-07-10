@@ -740,7 +740,41 @@ function navigate(hash) {
   else render();
 }
 
+// Per-view scroll memory so back-navigation lands the user where they left off
+// (e.g. tap an issue link inside a comment, read it, hit back → you're returned
+// to the exact scroll position, with the link you tapped back in view). Keyed
+// by the route portion of the hash (query string stripped so a push-notif
+// `?ws=...` doesn't fragment the cache for the same issue). scrollRestoration is
+// forced to manual because the browser's auto-restore fires before our async,
+// innerHTML-based view swap has rendered its content, so it always restores to 0.
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+const scrollMemory = new Map();
+const SCROLL_MEMORY_MAX = 32;
+let lastRenderedHash = null;
+function scrollKey(h) { return (h || '').split('?')[0]; }
+function rememberScroll() {
+  if (lastRenderedHash == null) return;
+  scrollMemory.set(lastRenderedHash, window.scrollY || window.pageYOffset || 0);
+  // Bounded LRU-ish cache: drop the oldest entry once we exceed the cap.
+  if (scrollMemory.size > SCROLL_MEMORY_MAX) {
+    scrollMemory.delete(scrollMemory.keys().next().value);
+  }
+}
+function restoreScroll(key) {
+  const y = scrollMemory.get(key);
+  if (y == null) { window.scrollTo(0, 0); return; }
+  // Two passes: once immediately, once after the next frame in case async
+  // content (avatars, late-arriving rows) extended the document height and the
+  // first scroll clamped short.
+  window.scrollTo(0, y);
+  requestAnimationFrame(() => window.scrollTo(0, y));
+}
+
 async function render() {
+  // Snapshot the outgoing view's scroll BEFORE any DOM mutation, so back-nav can
+  // restore it. lastRenderedHash is only set after a route successfully mounted,
+  // so setup/workspace-picker pre-states never pollute the cache.
+  rememberScroll();
   const app = $('#app');
   const pat = localStorage.getItem(LS.pat);
   if (!pat) return setupView(app);
@@ -791,10 +825,16 @@ async function render() {
       // span. connectWS() short-circuits when the socket is already open, so
       // without this the indicator stays blank after every navigation.
       updateConnIndicator();
+      // The view has rendered its content — restore this route's remembered
+      // scroll (or land at the top for a first visit).
+      const key = scrollKey(hash);
+      lastRenderedHash = key;
+      restoreScroll(key);
       return;
     }
   }
   app.innerHTML = `<div class="empty">Not found</div>`;
+  lastRenderedHash = null;
 }
 
 window.addEventListener('hashchange', render);
