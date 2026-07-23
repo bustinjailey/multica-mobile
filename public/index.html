@@ -438,21 +438,92 @@ function renderAttachChips(files) {
 // `atts` is the AttachmentResponse[] returned by the server.
 //   - image/*  → inline thumbnail that opens the full image in a new tab
 //   - other    → download chip with filename + size
+//
+// Attachment URLs come in two shapes. A same-origin API path like
+// "/api/attachments/<id>/download" sits behind the Auth middleware and ONLY
+// accepts the PAT via an Authorization header — a raw <a href>/<img src> the
+// browser opens or loads carries no header and 401s with "missing
+// authorization" (BUS-167). For that case we stash the URL in data-att-url and
+// hydrateAttachments() fetches the bytes through the authed client, swapping in
+// a blob: URL. Absolute URLs (e.g. a CloudFront presigned link) are
+// self-authenticating and used directly — attaching our header would break an
+// S3/CloudFront presigned GET.
 function renderAttachments(atts) {
   if (!atts || !atts.length) return '';
   return `<div class="attachments">${atts.map(a => {
     const url = a.download_url || a.url || '';
     const isImg = (a.content_type || '').startsWith('image/');
+    const authed = attachmentNeedsAuth(url);
+    const eurl = escapeHtml(url);
     if (isImg) {
-      return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">
-        <img class="thumb" src="${escapeHtml(url)}" alt="${escapeHtml(a.filename || '')}" loading="lazy">
+      return `<a class="att att-img" ${authed ? `href="#" data-att-url="${eurl}"` : `href="${eurl}"`} target="_blank" rel="noopener">
+        <img class="thumb"${authed ? '' : ` src="${eurl}"`} alt="${escapeHtml(a.filename || '')}" loading="lazy">
       </a>`;
     }
-    return `<a class="file-chip" href="${escapeHtml(url)}" target="_blank" rel="noopener" download>
+    return `<a class="att att-file file-chip" ${authed ? `href="#" data-att-url="${eurl}" data-att-name="${escapeHtml(a.filename || 'file')}"` : `href="${eurl}" download`} target="_blank" rel="noopener">
       📎 <span class="name">${escapeHtml(a.filename || 'file')}</span>
       <span class="size">${escapeHtml(fmtBytes(a.size_bytes || 0))}</span>
     </a>`;
   }).join('')}</div>`;
+}
+
+// True when an attachment URL is a same-origin API path that needs the PAT sent
+// as an Authorization header (so it can't be opened as a raw link / img src).
+function attachmentNeedsAuth(url) {
+  return typeof url === 'string' && url.startsWith('/');
+}
+
+// Fetch an authed attachment once and cache the resulting blob: URL, so repeated
+// timeline re-renders don't re-download the same bytes.
+const attBlobCache = new Map(); // download path -> blob: object URL
+async function fetchAttachmentBlobURL(path) {
+  const cached = attBlobCache.get(path);
+  if (cached) return cached;
+  const r = await fetch(apiBase() + path, { headers: authHeaders() });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const obj = URL.createObjectURL(await r.blob());
+  attBlobCache.set(path, obj);
+  return obj;
+}
+
+// Swap authed attachment placeholders for blob: URLs once they're in the DOM.
+// Idempotent (guarded by data-att-hydrated), so it's safe to re-run after every
+// timeline re-render. Images load eagerly; file chips fetch on tap so large
+// files aren't pulled until the user asks.
+function hydrateAttachments(root) {
+  if (!root) return;
+  root.querySelectorAll('a.att-img[data-att-url]:not([data-att-hydrated])').forEach(a => {
+    a.dataset.attHydrated = '1';
+    fetchAttachmentBlobURL(a.getAttribute('data-att-url')).then(obj => {
+      a.href = obj;
+      const img = a.querySelector('img');
+      if (img) img.src = obj;
+    }).catch(() => {
+      const img = a.querySelector('img');
+      if (img) img.replaceWith(Object.assign(document.createElement('span'), { className: 'att-err', textContent: '⚠︎ attachment unavailable' }));
+    });
+  });
+  root.querySelectorAll('a.att-file[data-att-url]:not([data-att-hydrated])').forEach(a => {
+    a.dataset.attHydrated = '1';
+    a.addEventListener('click', async ev => {
+      ev.preventDefault();
+      if (a.dataset.attBusy) return;
+      a.dataset.attBusy = '1';
+      try {
+        const obj = await fetchAttachmentBlobURL(a.getAttribute('data-att-url'));
+        const dl = document.createElement('a');
+        dl.href = obj;
+        dl.download = a.getAttribute('data-att-name') || 'file';
+        document.body.appendChild(dl);
+        dl.click();
+        dl.remove();
+      } catch (e) {
+        alert('Could not download attachment: ' + (e.message || 'error'));
+      } finally {
+        delete a.dataset.attBusy;
+      }
+    });
+  });
 }
 
 // ===================== Event bus + WebSocket =====================
@@ -1902,7 +1973,7 @@ function wireIssueLive(app, issue) {
     try {
       const fresh = await api(`/api/issues/${issueId}/timeline`);
       const el = document.getElementById('comments');
-      if (el) el.innerHTML = (fresh || []).map(renderTimelineEntry).join('') || '<div class="empty" style="padding:16px;">No activity yet.</div>';
+      if (el) { el.innerHTML = (fresh || []).map(renderTimelineEntry).join('') || '<div class="empty" style="padding:16px;">No activity yet.</div>'; hydrateAttachments(el); }
       const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
       const heading = document.querySelector('#detail h3');
       if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
@@ -1954,6 +2025,7 @@ function wireIssueLive(app, issue) {
       if (el) {
         el.innerHTML = (fresh || []).map(renderTimelineEntry).join('')
           || '<div class="empty" style="padding:16px;">No activity yet.</div>';
+        hydrateAttachments(el);
       }
       const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
       const heading = document.querySelector('#detail h3');
@@ -2278,6 +2350,9 @@ function buildAssigneeOptions(curType, curId) {
 }
 
 function wireIssueDetail(app, issue, timeline) {
+  // Load authed attachment thumbnails (description + comments) via blob: URLs.
+  hydrateAttachments($('#detail'));
+
   // Floating scroll buttons. Both are hidden while the composer's action row
   // (Send / @ buttons) is in view, so neither overlaps the @ button when the
   // user has scrolled to the bottom to comment.
@@ -2485,6 +2560,7 @@ function wireIssueDetail(app, issue, timeline) {
       // round-trip blink for the sender.
       const fresh = await api(`/api/issues/${issue.id}/timeline`);
       $('#comments').innerHTML = (fresh || []).map(renderTimelineEntry).join('');
+      hydrateAttachments($('#comments'));
       const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
       const heading = document.querySelector('#detail h3');
       if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
