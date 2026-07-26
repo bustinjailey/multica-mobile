@@ -10,10 +10,12 @@ This repo is a monorepo with two parts:
 ## Features
 
 - 📥 Inbox with unread badge
-- 📋 Issue list (filter open / mine / all)
-- ✏️ Change issue status and assignee inline
+- 📋 Issue list (filter open / mine / all), with priority bars, label chips, and due-date badges on each card
+- ✏️ Change issue status, priority, and assignee inline
 - ➕ Create new issue (title, description, status, priority, assignee)
 - 💬 Comment on issues with `@`-mention picker for agents and members (auto-triggers agent tasks server-side)
+- 💬 Reply threading, emoji reactions, and resolve/collapse on comment threads
+- 🔗 Linked pull requests, persistent agent-run history (survives after the active session ends), and parent/sub-issue navigation on the issue detail view
 - 📲 Installable to home screen on iOS/Android (PWA)
 
 ## How it works

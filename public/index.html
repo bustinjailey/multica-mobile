@@ -141,6 +141,26 @@
   .pill.status-cancelled { color: var(--muted); text-decoration: line-through; }
   .pill.priority-urgent { color: var(--danger); border-color: var(--danger); }
   .pill.priority-high { color: var(--warning); }
+  .pill.priority-medium { color: var(--warning); }
+  .pill.priority-low { color: var(--accent-2); }
+  .pill.due-overdue { color: var(--danger); border-color: var(--danger); }
+
+  /* Priority bars icon (Linear-style: N of 4 bars filled) */
+  .priority-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 11px; vertical-align: middle; }
+  .priority-bars i { display: block; width: 3px; border-radius: 1px; background: var(--border); }
+  .priority-bars i:nth-child(1) { height: 35%; }
+  .priority-bars i:nth-child(2) { height: 55%; }
+  .priority-bars i:nth-child(3) { height: 75%; }
+  .priority-bars i:nth-child(4) { height: 100%; }
+
+  /* Label chips */
+  .label-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 600; padding: 2px 8px 2px 6px;
+    border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border);
+    color: var(--text);
+  }
+  .label-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 
   /* Comments */
   .comment {
@@ -150,6 +170,15 @@
     padding: 12px;
     margin-bottom: 8px;
   }
+  .comment.resolved { opacity: 0.7; }
+  .comment .resolved-indicator {
+    font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px;
+    margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  .comment .resolved-indicator button {
+    margin-left: auto; background: transparent; border: 0; color: var(--accent-2);
+    padding: 0; min-height: 0; font-size: 11px; font-weight: 600; cursor: pointer;
+  }
   .comment .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 6px; align-items: center; }
   .comment .who .badge { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; font-size: 10px; }
   .comment .body { white-space: pre-wrap; word-break: break-word; }
@@ -157,6 +186,85 @@
     background: var(--surface-2); padding: 1px 6px; border-radius: 4px;
     text-decoration: none; color: var(--accent-2); font-weight: 600;
   }
+  .resolved-bar {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 14px; margin-bottom: 8px;
+    color: var(--muted); font-size: 13px; cursor: pointer;
+  }
+  .resolved-bar .txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Replies — flattened into the parent bubble, indented under a divider */
+  .comment .replies { margin-top: 10px; padding-left: 12px; border-left: 2px solid var(--border); }
+  .comment .reply { padding: 8px 0; border-top: 1px solid var(--border); }
+  .comment .reply:first-child { border-top: 0; }
+
+  /* Reactions */
+  .reactions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .reaction-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--muted); cursor: pointer;
+  }
+  .reaction-chip.mine { border-color: var(--accent); color: var(--accent); background: rgba(96,165,250,0.12); }
+  .reaction-chip .add { color: var(--muted); }
+  .reaction-add-picker { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .reaction-add-picker button {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 2px 8px; min-height: 0; font-size: 14px; cursor: pointer;
+  }
+  .link-btn {
+    background: transparent; border: 0; color: var(--muted);
+    padding: 0; min-height: 0; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .link-btn:hover { color: var(--accent-2); }
+
+  /* Runs / sessions history */
+  .runs-section {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 8px 12px; margin-bottom: 12px;
+  }
+  .runs-section summary {
+    cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text);
+    list-style: none;
+  }
+  .runs-section summary::-webkit-details-marker { display: none; }
+  .runs-list { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+  .run-row { display: flex; gap: 8px; align-items: flex-start; }
+  .run-dot {
+    width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto;
+    background: var(--accent-2);
+  }
+  .run-dot.run-failed { background: var(--danger); }
+  .run-line { font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  .run-meta { font-size: 12px; color: var(--muted); }
+
+  /* Linked pull requests */
+  .pr-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+  .pr-row {
+    display: flex; gap: 8px; align-items: flex-start; padding: 8px 4px;
+    border-radius: 8px; text-decoration: none; color: inherit;
+  }
+  .pr-row:hover { background: var(--surface-2); }
+  .pr-icon { font-size: 13px; line-height: 1.4; }
+  .pr-title { font-size: 13px; font-weight: 600; word-break: break-word; }
+  .pr-meta { font-size: 12px; color: var(--muted); }
+
+  /* Linked issues (parent + sub-issues) */
+  .linked-issues { margin-bottom: 12px; }
+  .linked-issues-label {
+    font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.03em; margin: 10px 0 4px;
+  }
+  .linked-issues-label:first-child { margin-top: 0; }
+  .linked-issue-row {
+    display: flex; gap: 8px; align-items: baseline; padding: 6px 4px;
+    border-radius: 8px; cursor: pointer;
+  }
+  .linked-issue-row:hover { background: var(--surface-2); }
+  .linked-issue-row .ident { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .linked-issue-row .title { flex: 1; font-size: 13px; font-weight: 500; word-break: break-word; }
 
   /* Forms */
   .field { margin-bottom: 12px; }
@@ -177,6 +285,16 @@
     cursor: pointer; min-height: 32px;
   }
   .composer .quick-actions button:disabled { opacity: 0.5; cursor: default; }
+  .composer .reply-indicator {
+    display: flex; align-items: center; gap: 8px; font-size: 12px;
+    color: var(--muted); background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 10px; margin-bottom: 8px;
+  }
+  .composer .reply-indicator button {
+    background: transparent; border: 0; color: var(--muted);
+    padding: 0 2px; min-height: 0; font-size: 13px; cursor: pointer; margin-left: auto;
+  }
+  .composer .reply-indicator button:hover { color: var(--text); }
   .composer .attach-row {
     display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;
   }
@@ -351,6 +469,7 @@ const state = {
   inboxUnread: 0,
   activeTasks: {},      // issue_id → { task_id, agent_id, agent_name, summary, started_at }
   taskMessages: {},     // task_id → [TaskMessagePayload, ...] (for the activity log)
+  allTasks: {},         // issue_id → [AgentTaskResponse, ...] (full run history, any status)
   wsStatus: 'offline',  // 'offline' | 'connecting' | 'online'
   viewSubs: [],         // event-bus unsubscribers for current view
   ws: null,
@@ -697,6 +816,95 @@ const fmtDate = (s) => {
   if (days < 30) return `${days}d`;
   return d.toLocaleDateString();
 };
+
+// Format a due_date (date-only or ISO timestamp) as a short calendar date,
+// without the relative "3d ago" treatment fmtDate uses for activity times.
+const fmtDateOnly = (s) => {
+  if (!s) return '';
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
+
+// ===================== Priority / labels / due date =====================
+// Bars-filled-of-4 + color, mirroring the desktop/native priority icon
+// (packages/core/issues/config/priority.ts).
+const PRIORITY_BARS = { urgent: 4, high: 3, medium: 2, low: 1, none: 0 };
+const PRIORITY_COLOR = { urgent: 'var(--danger)', high: 'var(--warning)', medium: 'var(--warning)', low: 'var(--accent-2)', none: 'var(--muted)' };
+const PRIORITIES = ['none', 'low', 'medium', 'high', 'urgent'];
+const prettyPriority = (p) => ({ none: 'No priority', low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent' }[p] || p || 'No priority');
+function renderPriorityIcon(priority) {
+  const n = PRIORITY_BARS[priority] ?? 0;
+  const color = PRIORITY_COLOR[priority] || 'var(--muted)';
+  const bars = [0, 1, 2, 3].map(i => `<i style="background:${i < n ? color : 'var(--border)'}"></i>`).join('');
+  return `<span class="priority-bars" title="${escapeHtml(prettyPriority(priority))}" aria-hidden="true">${bars}</span>`;
+}
+
+// Read-only label chips (colored dot from the label's own hex + name).
+function renderLabelChips(labels) {
+  if (!labels || !labels.length) return '';
+  return labels.map(l => `<span class="label-chip" title="${escapeHtml(l.description || l.name)}"><i class="dot" style="background:${escapeHtml(l.color || '#64748b')};"></i>${escapeHtml(l.name)}</span>`).join('');
+}
+
+// True when a due date is in the past and the issue isn't already settled.
+function isOverdue(i) {
+  if (!i.due_date || i.status === 'done' || i.status === 'cancelled') return false;
+  return new Date(i.due_date).getTime() < Date.now();
+}
+function renderDueChip(i) {
+  if (!i.due_date) return '';
+  const overdue = isOverdue(i);
+  return `<span class="pill${overdue ? ' due-overdue' : ''}" title="Due date">📅 ${escapeHtml(fmtDateOnly(i.due_date))}</span>`;
+}
+
+// ===================== Timeline thread bundling =====================
+// Port of apps/mobile/lib/timeline-thread.ts: folds each reply chain into its
+// root comment's row (`replies[]`, flattened BFS/chronological order) so the
+// renderer can draw one bubble per thread instead of a flat reply list.
+// Orphan rescue: a reply whose parent isn't in the loaded timeline is
+// promoted to top-level rather than silently dropped.
+function buildTimelineRows(entries) {
+  const commentIds = new Set();
+  for (const e of entries) if (e.type === 'comment') commentIds.add(e.id);
+  const topLevel = [];
+  const childrenByParent = new Map();
+  for (const e of entries) {
+    if (e.type === 'comment' && e.parent_id && commentIds.has(e.parent_id)) {
+      const list = childrenByParent.get(e.parent_id) || [];
+      list.push(e);
+      childrenByParent.set(e.parent_id, list);
+    } else {
+      topLevel.push(e);
+    }
+  }
+  function collectDescendants(parentId) {
+    const out = [];
+    const queue = [parentId];
+    while (queue.length > 0) {
+      const pid = queue.shift();
+      const kids = childrenByParent.get(pid);
+      if (!kids) continue;
+      for (const child of kids) { out.push(child); queue.push(child.id); }
+    }
+    return out;
+  }
+  return topLevel.map(entry => ({
+    entry,
+    replies: entry.type === 'comment' ? collectDescendants(entry.id) : [],
+  }));
+}
+
+// Render the full #comments contents: bundle replies into their root, then
+// dispatch each row to renderActivityEntry (no replies) or renderCommentEl
+// (with its replies attached). Replaces the flat
+// `timeline.map(renderTimelineEntry).join('')` used at every re-render site.
+function renderTimelineList(entries) {
+  const rows = buildTimelineRows(entries || []);
+  return rows.map(row => {
+    if (row.entry.type === 'activity') return renderActivityEntry(row.entry);
+    return renderCommentEl(row.entry, row.replies);
+  }).join('');
+}
 
 function toast(msg, ms = 2000) {
   const el = document.createElement('div');
@@ -1049,7 +1257,7 @@ function switchToWorkspace(ws) {
   };
   localStorage.setItem(LS.ws, JSON.stringify(state.workspace));
   state.agents = []; state.members = []; state.agentsById = {}; state.membersById = {};
-  state.activeTasks = {}; state.taskMessages = {};
+  state.activeTasks = {}; state.taskMessages = {}; state.allTasks = {};
   if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
   return true;
 }
@@ -1648,7 +1856,9 @@ function renderIssueCard(i) {
       </div>
       <div class="meta">
         <span class="pill status-${i.status}">${prettyStatus(i.status)}</span>
-        ${i.priority && i.priority !== 'none' ? `<span class="pill priority-${i.priority}">${i.priority}</span>` : ''}
+        ${i.priority && i.priority !== 'none' ? renderPriorityIcon(i.priority) : ''}
+        ${renderLabelChips(i.labels)}
+        ${renderDueChip(i)}
         ${assigneeName ? `<span>👤 ${escapeHtml(assigneeName)}</span>` : ''}
         ${showWs ? `<span class="pill" style="background:var(--surface-2);" title="Workspace">🌐 ${escapeHtml(i._workspace.name)}</span>` : ''}
         <span style="margin-left:auto;">${fmtDate(i.updated_at)}</span>
@@ -1788,12 +1998,15 @@ async function viewIssue(app, issueId, _query) {
       if (!resolved) throw new Error(`Issue ${issueId} not found`);
       issueId = resolved;
     }
-    let issue, timeline, activeTask;
+    let issue, timeline, activeTask, prsResp, allTasksResp, childrenResp;
     try {
-      [issue, timeline, activeTask] = await Promise.all([
+      [issue, timeline, activeTask, prsResp, allTasksResp, childrenResp] = await Promise.all([
         api(`/api/issues/${issueId}`),
         api(`/api/issues/${issueId}/timeline`),
         api(`/api/issues/${issueId}/active-task`).catch(() => null),
+        api(`/api/issues/${issueId}/pull-requests`).catch(() => null),
+        api(`/api/issues/${issueId}/task-runs`).catch(() => null),
+        api(`/api/issues/${issueId}/children`).catch(() => null),
       ]);
     } catch (e) {
       // Fallback for push notifications delivered before the relay started
@@ -1816,10 +2029,18 @@ async function viewIssue(app, issueId, _query) {
       throw e;
     }
     await applyActiveTaskBackfill(issueId, activeTask);
+    state.allTasks[issueId] = Array.isArray(allTasksResp) ? allTasksResp : [];
+    const prs = prsResp?.pull_requests || [];
+    const children = childrenResp?.issues || [];
+    let parent = null;
+    if (issue.parent_issue_id) {
+      try { parent = await api(`/api/issues/${issue.parent_issue_id}`); } catch { /* parent may be inaccessible */ }
+    }
     document.querySelector('header.top h1').textContent = issue.identifier;
-    $('#detail').innerHTML = renderIssueDetail(issue, timeline || []);
+    $('#detail').innerHTML = renderIssueDetail(issue, timeline || [], { prs, parent, children });
     wireIssueDetail(app, issue, timeline || []);
     wireIssueLive(app, issue);
+    wireLinkedIssueNav(app, parent, children);
   } catch (e) {
     $('#detail').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
   }
@@ -1915,6 +2136,100 @@ function focusActivityLog() {
   target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+// ===================== Runs / sessions history =====================
+// The active-task banner above disappears the moment a task finishes —
+// that's fine while it's running, but it means the *only* record of an
+// agent session vanishes with it. This section is the persistent fallback:
+// once an issue has ever had a run, a tappable "Runs · N" row stays visible
+// (collapsed) even after every task is terminal, so history is never a dead
+// end. Mirrors apps/mobile's <AgentActivityRow> "Working / Runs · N / null"
+// three-state pattern, minus the avatar stack.
+const TASK_STATUS_LABEL = {
+  pending: 'Queued', queued: 'Queued', dispatched: 'Starting', running: 'Running',
+  waiting_local_directory: 'Waiting', completed: 'Completed', done: 'Completed',
+  failed: 'Failed', errored: 'Failed', cancelled: 'Cancelled',
+};
+function renderRunsSection(issueId) {
+  if (state.activeTasks[issueId]) return ''; // active banner already covers this case
+  const tasks = state.allTasks[issueId] || [];
+  const past = tasks.filter(t => TERMINAL_TASK_STATUSES.has(t.status));
+  if (!past.length) return '';
+  const ordered = past.slice().sort((a, b) => new Date(b.completed_at || b.started_at || b.dispatched_at || 0) - new Date(a.completed_at || a.started_at || a.dispatched_at || 0));
+  return `
+    <details class="runs-section">
+      <summary>🕓 Runs · ${past.length}</summary>
+      <div class="runs-list">${ordered.map(renderRunRow).join('')}</div>
+    </details>`;
+}
+function renderRunRow(t) {
+  const name = t.agent?.name || state.agentsById[t.agent_id]?.name || 'agent';
+  const failed = t.status === 'failed' || t.status === 'errored';
+  const when = fmtDate(t.completed_at || t.started_at || t.dispatched_at || t.created_at);
+  const errText = failed ? (t.failure_reason || t.error || '') : '';
+  return `
+    <div class="run-row">
+      <span class="run-dot${failed ? ' run-failed' : ''}"></span>
+      <div style="flex:1;min-width:0;">
+        <div class="run-line"><strong>${escapeHtml(name)}</strong> <span class="pill">${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}</span></div>
+        <div class="run-meta">${escapeHtml(when)}${errText ? ` · ${escapeHtml(errText.length > 140 ? errText.slice(0, 140) + '…' : errText)}` : ''}</div>
+      </div>
+    </div>`;
+}
+
+// ===================== Linked pull requests =====================
+const PR_STATE_ICON = { open: '🟢', draft: '⚪', merged: '🟣', closed: '🔴' };
+const prettyPRState = (s) => ({ open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed' }[s] || s || '');
+function renderPRList(prs) {
+  if (!prs || !prs.length) return '';
+  return `
+    <h3 style="font-size:14px;color:var(--muted);margin:0 0 8px;">Pull Requests</h3>
+    <div class="pr-list">
+      ${prs.map(pr => `
+        <a class="pr-row" href="${escapeHtml(pr.html_url)}" target="_blank" rel="noreferrer noopener">
+          <span class="pr-icon">${PR_STATE_ICON[pr.state] || '⚪'}</span>
+          <div style="flex:1;min-width:0;">
+            <div class="pr-title">${escapeHtml(pr.title)}</div>
+            <div class="pr-meta">${escapeHtml(pr.repo_owner)}/${escapeHtml(pr.repo_name)}#${pr.number} · ${escapeHtml(prettyPRState(pr.state))}${pr.author_login ? ` · @${escapeHtml(pr.author_login)}` : ''}</div>
+          </div>
+        </a>`).join('')}
+    </div>`;
+}
+
+// ===================== Linked issues (parent + children) =====================
+function renderLinkedIssueRow(li) {
+  return `
+    <div class="linked-issue-row" data-nav-id="${escapeHtml(li.id)}" role="button" tabindex="0">
+      <span class="pill status-${li.status}">${prettyStatus(li.status)}</span>
+      <span class="ident">${escapeHtml(li.identifier)}</span>
+      <span class="title">${escapeHtml(li.title)}</span>
+    </div>`;
+}
+function renderLinkedIssuesSection(parent, children) {
+  const hasParent = !!parent;
+  const hasChildren = !!(children && children.length);
+  if (!hasParent && !hasChildren) return '';
+  return `
+    <div class="linked-issues">
+      ${hasParent ? `<div class="linked-issues-label">Parent</div>${renderLinkedIssueRow(parent)}` : ''}
+      ${hasChildren ? `<div class="linked-issues-label">Sub-issues (${children.length})</div>${children.map(renderLinkedIssueRow).join('')}` : ''}
+    </div>`;
+}
+// Click/keyboard handler for parent/sub-issue rows in the linked-issues section.
+// Reuses openIssueCard so cross-workspace parents/children (rare, but possible)
+// switch state.workspace the same way issue-list card taps do.
+function wireLinkedIssueNav(app, parent, children) {
+  const byId = new Map();
+  if (parent) byId.set(parent.id, parent);
+  (children || []).forEach(c => byId.set(c.id, c));
+  $$('#linked-issues-section .linked-issue-row').forEach(el => {
+    const issue = byId.get(el.dataset.navId);
+    if (!issue) return;
+    const go = () => openIssueCard(issue);
+    el.onclick = go;
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+  });
+}
+
 // Wires up live event handlers for the issue detail view. Each subscription
 // pushes its unsubscriber into state.viewSubs so render() can clean them up
 // when the user navigates away.
@@ -1965,6 +2280,34 @@ function wireIssueLive(app, issue) {
     if (wasNearBottom) list.scrollTop = list.scrollHeight;
   }));
 
+  // Runs history — re-fetch on any terminal task event for this issue so the
+  // persistent history panel picks up what the active banner just dropped.
+  const refreshRuns = async (payload) => {
+    const iid = payload?.issue_id || payload?.task?.issue_id;
+    if (iid && iid !== issueId) return;
+    try {
+      const fresh = await api(`/api/issues/${issueId}/task-runs`);
+      state.allTasks[issueId] = Array.isArray(fresh) ? fresh : [];
+      const el = document.getElementById('runs-section');
+      if (el) el.innerHTML = renderRunsSection(issueId);
+    } catch (e) { /* ignore */ }
+  };
+  ['task:completed', 'task:failed', 'task:cancelled'].forEach(t => state.viewSubs.push(bus.on(t, refreshRuns)));
+
+  // Linked PRs — re-fetch on link/update/unlink. Payload shape is inconsistent
+  // across server emit sites (a `linked_issue_ids` array on link, a singular
+  // `issue_id` on CI-status updates), so check both.
+  const refreshPRs = async (payload) => {
+    const matches = payload?.issue_id === issueId || (payload?.linked_issue_ids || []).includes(issueId);
+    if (!matches) return;
+    try {
+      const fresh = await api(`/api/issues/${issueId}/pull-requests`);
+      const el = document.getElementById('pr-section');
+      if (el) el.innerHTML = renderPRList(fresh?.pull_requests || []);
+    } catch (e) { /* ignore */ }
+  };
+  ['pull_request:linked', 'pull_request:updated', 'pull_request:unlinked'].forEach(t => state.viewSubs.push(bus.on(t, refreshPRs)));
+
   // Timeline — re-fetch on any event that could change the merged stream:
   // comments, reactions, activity (assignment/status/priority changes).
   const refreshTimeline = async (payload) => {
@@ -1973,7 +2316,7 @@ function wireIssueLive(app, issue) {
     try {
       const fresh = await api(`/api/issues/${issueId}/timeline`);
       const el = document.getElementById('comments');
-      if (el) { el.innerHTML = (fresh || []).map(renderTimelineEntry).join('') || '<div class="empty" style="padding:16px;">No activity yet.</div>'; hydrateAttachments(el); }
+      if (el) { el.innerHTML = renderTimelineList(fresh) || '<div class="empty" style="padding:16px;">No activity yet.</div>'; hydrateAttachments(el); }
       const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
       const heading = document.querySelector('#detail h3');
       if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
@@ -1993,6 +2336,8 @@ function wireIssueLive(app, issue) {
       Object.assign(issue, fresh);
       const statusSel = document.getElementById('status');
       if (statusSel && statusSel.value !== fresh.status) statusSel.value = fresh.status;
+      const prioritySel = document.getElementById('priority');
+      if (prioritySel && prioritySel.value !== (fresh.priority || 'none')) prioritySel.value = fresh.priority || 'none';
       const assigneeSel = document.getElementById('assignee');
       if (assigneeSel) {
         const v = fresh.assignee_type && fresh.assignee_id ? `${fresh.assignee_type}:${fresh.assignee_id}` : '';
@@ -2021,9 +2366,14 @@ function wireIssueLive(app, issue) {
         if (log) log.innerHTML = renderActivityLog(issueId);
         wireBannerTap();
       }
+      // Runs history + linked PRs don't have their own WS-drop detection, so
+      // catch-up always re-fetches them too — cheap, and keeps them correct
+      // after a backgrounded tab misses a task/PR event entirely.
+      refreshRuns({ issue_id: issueId });
+      refreshPRs({ issue_id: issueId });
       const el = document.getElementById('comments');
       if (el) {
-        el.innerHTML = (fresh || []).map(renderTimelineEntry).join('')
+        el.innerHTML = renderTimelineList(fresh)
           || '<div class="empty" style="padding:16px;">No activity yet.</div>';
         hydrateAttachments(el);
       }
@@ -2044,26 +2394,35 @@ function wireIssueLive(app, issue) {
   state.viewSubs.push(() => clearInterval(pollId));
 }
 
-function renderIssueDetail(i, timeline) {
+function renderIssueDetail(i, timeline, extra = {}) {
   const assigneeOptions = buildAssigneeOptions(i.assignee_type, i.assignee_id);
   const commentCount = timeline.filter(t => t.type === 'comment').length;
+  const prs = extra.prs || [];
   return `
     <h2 style="margin:0 0 8px;font-size:20px;line-height:1.3;word-break:break-word;">${escapeHtml(i.title)}</h2>
+    ${(i.labels && i.labels.length) || i.due_date ? `<div class="meta" style="margin:0 0 12px;">${renderLabelChips(i.labels)}${renderDueChip(i)}</div>` : ''}
     <div class="row" style="margin-bottom:12px;">
       <select id="status">
         ${STATUSES.map(s => `<option value="${s}" ${s===i.status?'selected':''}>${prettyStatus(s)}</option>`).join('')}
+      </select>
+      <select id="priority">
+        ${PRIORITIES.map(p => `<option value="${p}" ${p===(i.priority||'none')?'selected':''}>${prettyPriority(p)}</option>`).join('')}
       </select>
       <select id="assignee">${assigneeOptions}</select>
     </div>
     <div id="active-banner">${renderActiveBanner(i.id)}</div>
     <div id="activity-log">${renderActivityLog(i.id)}</div>
+    <div id="runs-section">${renderRunsSection(i.id)}</div>
+    <div id="pr-section">${renderPRList(prs)}</div>
+    <div id="linked-issues-section">${renderLinkedIssuesSection(extra.parent, extra.children)}</div>
     ${i.description || (i.attachments && i.attachments.length) ? `<div class="comment">${i.description ? `<div class="body">${renderCommentBody(i.description)}</div>` : ''}${renderAttachments(i.attachments)}</div>` : ''}
 
     <h3 style="font-size:14px;color:var(--muted);margin:20px 0 8px;">History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})</h3>
-    <div id="comments">${timeline.map(renderTimelineEntry).join('') || '<div class="empty" style="padding:16px;">No activity yet.</div>'}</div>
+    <div id="comments">${renderTimelineList(timeline) || '<div class="empty" style="padding:16px;">No activity yet.</div>'}</div>
 
     <div class="composer" style="margin-top:16px;">
       <div id="quick-actions" class="quick-actions">${renderQuickActions(i, timeline)}</div>
+      <div id="reply-indicator" class="reply-indicator" style="display:none;"></div>
       <div id="attach-row" class="attach-row"></div>
       <textarea id="composer-text" placeholder="Comment… (type @ to mention an agent or member)"></textarea>
       <div id="picker"></div>
@@ -2132,42 +2491,112 @@ function renderActivityEntry(a) {
     </div>`;
 }
 
-function renderTimelineEntry(t) {
-  if (t.type === 'comment') {
-    // Adapt timeline-shape comment entry to the existing renderCommentEl.
-    return renderCommentEl({
-      id: t.id,
-      author_type: t.actor_type,
-      author_id: t.actor_id,
-      content: t.content || '',
-      created_at: t.created_at,
-      reactions: t.reactions || [],
-      type: t.comment_type || 'comment',
-      attachments: t.attachments || [],
-    });
+// Comment ids the user has manually expanded out of their default-collapsed
+// "Resolved" bar. Kept at module scope (not per-render) so a live timeline
+// refresh doesn't re-collapse a thread the user just opened.
+const expandedResolvedThreads = new Set();
+const QUICK_EMOJIS = ['👍', '👌', '❤️', '✅', '🎉', '😕', '🚀', '👀'];
+
+// Group a comment's raw reaction rows into {emoji, count, reacted} pills —
+// mirrors apps/mobile/components/issue/reaction-bar.tsx's groupReactions.
+function groupReactions(reactions) {
+  const meId = state.me?.id;
+  const map = new Map();
+  for (const r of (reactions || [])) {
+    let g = map.get(r.emoji);
+    if (!g) { g = { emoji: r.emoji, count: 0, reacted: false }; map.set(r.emoji, g); }
+    g.count += 1;
+    if (r.actor_type === 'member' && r.actor_id === meId) g.reacted = true;
   }
-  if (t.type === 'activity') return renderActivityEntry(t);
-  return '';
+  return Array.from(map.values());
 }
 
-function renderCommentEl(c) {
-  const who = c.author_type === 'agent'
-    ? (state.agentsById[c.author_id]?.name || 'agent')
-    : (state.membersById[c.author_id]?.name || state.membersById[c.author_id]?.email || 'member');
+function renderReactions(t) {
+  const grouped = groupReactions(t.reactions);
+  if (!grouped.length) return '';
+  return `<div class="reactions">${grouped.map(g => `
+    <button type="button" class="reaction-chip${g.reacted ? ' mine' : ''}" data-id="${t.id}" data-emoji="${escapeHtml(g.emoji)}">${g.emoji} ${g.count}</button>`).join('')}</div>`;
+}
+
+// Compact "thread is resolved" bar shown in place of a resolved root comment
+// until the user taps to expand — mirrors apps/mobile's <ResolvedThreadBar>.
+function renderResolvedBar(entry, replies) {
+  const MAX_NAMED = 2;
+  const seen = new Set();
+  const ordered = [];
+  for (const e of [entry, ...replies]) {
+    const key = `${e.actor_type}:${e.actor_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    ordered.push({ type: e.actor_type, id: e.actor_id });
+  }
+  const named = ordered.slice(0, MAX_NAMED).map(a => actorName(a.type, a.id)).join(', ');
+  const remaining = ordered.length - MAX_NAMED;
+  const authorsLabel = remaining > 0 ? `${named} +${remaining}` : named;
+  const total = 1 + replies.length;
+  return `
+    <div class="resolved-bar" data-expand-id="${entry.id}">
+      ✅ <span class="txt">Resolved · ${total} ${total === 1 ? 'message' : 'messages'} by ${escapeHtml(authorsLabel)}</span> ⌄
+    </div>`;
+}
+
+function renderCommentEl(t, replies = []) {
+  const resolved = !!t.resolved_at;
+  if (resolved && !expandedResolvedThreads.has(t.id)) {
+    return renderResolvedBar(t, replies);
+  }
+  const who = actorName(t.actor_type, t.actor_id);
   // Body may be a single space (image-only comments — see send handler). When
   // the rendered body collapses to whitespace, hide it so attachments stand
   // alone instead of leaving a blank line above the thumbnails.
-  const bodyHtml = renderCommentBody(c.content);
-  const bodyTrimmed = (c.content || '').trim();
+  const bodyHtml = renderCommentBody(t.content || '');
+  const bodyTrimmed = (t.content || '').trim();
+  const resolvedIndicator = resolved ? `
+    <div class="resolved-indicator">
+      ✅ Resolved by <strong>${escapeHtml(actorName(t.resolved_by_type, t.resolved_by_id))}</strong>${t.resolved_at ? ` · ${escapeHtml(fmtDate(t.resolved_at))}` : ''}
+      <button type="button" class="collapse-resolved" data-id="${t.id}">Collapse</button>
+    </div>` : '';
+  const repliesHtml = replies.length
+    ? `<div class="replies">${replies.map(r => renderReply(r)).join('')}</div>`
+    : '';
   return `
-    <div class="comment">
+    <div class="comment${resolved ? ' resolved' : ''}">
+      ${resolvedIndicator}
       <div class="who">
         <span><strong>${escapeHtml(who)}</strong></span>
-        <span class="badge">${c.author_type}</span>
-        <span style="margin-left:auto;">${fmtDate(c.created_at)}</span>
+        <span class="badge">${escapeHtml(t.actor_type || '')}</span>
+        <span style="margin-left:auto;">${fmtDate(t.created_at)}</span>
       </div>
       ${bodyTrimmed ? `<div class="body">${bodyHtml}</div>` : ''}
-      ${renderAttachments(c.attachments)}
+      ${renderAttachments(t.attachments)}
+      ${renderReactions(t)}
+      <div class="comment-actions" style="display:flex;gap:14px;margin-top:8px;">
+        <button type="button" class="link-btn reply-btn" data-id="${t.id}" data-name="${escapeHtml(who)}">Reply</button>
+        <button type="button" class="link-btn react-btn" data-id="${t.id}">React</button>
+        ${!resolved ? `<button type="button" class="link-btn resolve-btn" data-id="${t.id}">Resolve</button>` : ''}
+      </div>
+      <div class="reaction-add-picker" data-id="${t.id}" style="display:none;"></div>
+      ${repliesHtml}
+    </div>`;
+}
+
+// A reply is rendered inline inside its root's `.replies` block — no nested
+// action row (reply-to-reply still targets the root bubble, per the RN app's
+// "no Replying to headers, the bubble boundary indicates the thread" rule).
+function renderReply(t) {
+  const who = actorName(t.actor_type, t.actor_id);
+  const bodyHtml = renderCommentBody(t.content || '');
+  const bodyTrimmed = (t.content || '').trim();
+  return `
+    <div class="reply">
+      <div class="who">
+        <span><strong>${escapeHtml(who)}</strong></span>
+        <span class="badge">${escapeHtml(t.actor_type || '')}</span>
+        <span style="margin-left:auto;">${fmtDate(t.created_at)}</span>
+      </div>
+      ${bodyTrimmed ? `<div class="body">${bodyHtml}</div>` : ''}
+      ${renderAttachments(t.attachments)}
+      ${renderReactions(t)}
     </div>`;
 }
 
@@ -2425,6 +2854,126 @@ function wireIssueDetail(app, issue, timeline) {
       toast(err.message);
     }
   };
+  // Priority change
+  const prioritySel = $('#priority');
+  if (prioritySel) {
+    prioritySel.onchange = async (e) => {
+      const newPriority = e.target.value;
+      try {
+        await api(`/api/issues/${issue.id}`, { method: 'PUT', body: JSON.stringify({ priority: newPriority }) });
+        toast(`Priority → ${prettyPriority(newPriority)}`);
+        issue.priority = newPriority;
+      } catch (err) {
+        toast(err.message);
+        e.target.value = issue.priority || 'none';
+      }
+    };
+  }
+
+  // Re-render #comments from the current in-memory `timeline` (used for
+  // expand/collapse of a resolved thread — no network round-trip needed).
+  function rerenderComments() {
+    const el = $('#comments');
+    if (el) { el.innerHTML = renderTimelineList(timeline) || '<div class="empty" style="padding:16px;">No activity yet.</div>'; hydrateAttachments(el); }
+  }
+  // Re-fetch + re-render #comments (used after an action that changes server
+  // state: reacting, resolving, replying).
+  async function refreshCommentsUI() {
+    try {
+      timeline = await api(`/api/issues/${issue.id}/timeline`) || [];
+      rerenderComments();
+      const commentCount = timeline.filter(t => t.type === 'comment').length;
+      const heading = document.querySelector('#detail h3');
+      if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
+      refreshQuickActions(issue, timeline);
+    } catch (err) { toast(err.message); }
+  }
+  async function toggleReaction(commentId, emoji, alreadyMine) {
+    try {
+      await api(`/api/comments/${commentId}/reactions`, {
+        method: alreadyMine ? 'DELETE' : 'POST',
+        body: JSON.stringify({ emoji }),
+      });
+      await refreshCommentsUI();
+    } catch (err) { toast(err.message); }
+  }
+
+  // Reply-in-progress state — surfaced as a small "Replying to X" pill above
+  // the composer with a cancel affordance, cleared on send/cancel.
+  let replyTo = null;
+  const replyIndicator = $('#reply-indicator');
+  function updateReplyIndicator() {
+    if (!replyIndicator) return;
+    if (!replyTo) { replyIndicator.style.display = 'none'; replyIndicator.innerHTML = ''; return; }
+    replyIndicator.style.display = 'flex';
+    replyIndicator.innerHTML = `<span>Replying to <strong>${escapeHtml(replyTo.name)}</strong></span><button type="button" id="cancel-reply">✕</button>`;
+    $('#cancel-reply').onclick = () => { replyTo = null; updateReplyIndicator(); };
+  }
+
+  // Event delegation for reply / react / resolve / resolved-bar-expand clicks
+  // inside the comments list — installed once, survives every re-render since
+  // it's bound on the (never-replaced) #comments container.
+  const commentsEl = $('#comments');
+  if (commentsEl) {
+    commentsEl.addEventListener('click', async (e) => {
+      const resolvedBar = e.target.closest('.resolved-bar');
+      if (resolvedBar) {
+        expandedResolvedThreads.add(resolvedBar.dataset.expandId);
+        rerenderComments();
+        return;
+      }
+      const collapseBtn = e.target.closest('.collapse-resolved');
+      if (collapseBtn) {
+        expandedResolvedThreads.delete(collapseBtn.dataset.id);
+        rerenderComments();
+        return;
+      }
+      const replyBtn = e.target.closest('.reply-btn');
+      if (replyBtn) {
+        replyTo = { id: replyBtn.dataset.id, name: replyBtn.dataset.name };
+        updateReplyIndicator();
+        ta?.focus();
+        return;
+      }
+      const reactBtn = e.target.closest('.react-btn');
+      if (reactBtn) {
+        const id = reactBtn.dataset.id;
+        commentsEl.querySelectorAll('.reaction-add-picker').forEach(p => {
+          if (p.dataset.id !== id) { p.style.display = 'none'; p.innerHTML = ''; }
+        });
+        const picker = commentsEl.querySelector(`.reaction-add-picker[data-id="${CSS.escape(id)}"]`);
+        if (picker) {
+          const wasOpen = picker.style.display !== 'none' && picker.innerHTML;
+          if (wasOpen) { picker.style.display = 'none'; picker.innerHTML = ''; }
+          else {
+            picker.style.display = 'flex';
+            picker.innerHTML = QUICK_EMOJIS.map(em => `<button type="button" data-id="${id}" data-emoji="${em}">${em}</button>`).join('');
+          }
+        }
+        return;
+      }
+      const emojiBtn = e.target.closest('.reaction-add-picker button');
+      if (emojiBtn) {
+        const id = emojiBtn.dataset.id, emoji = emojiBtn.dataset.emoji;
+        const mine = !!commentsEl.querySelector(`.reaction-chip.mine[data-id="${CSS.escape(id)}"][data-emoji="${CSS.escape(emoji)}"]`);
+        await toggleReaction(id, emoji, mine);
+        return;
+      }
+      const chip = e.target.closest('.reaction-chip');
+      if (chip) {
+        await toggleReaction(chip.dataset.id, chip.dataset.emoji, chip.classList.contains('mine'));
+        return;
+      }
+      const resolveBtn = e.target.closest('.resolve-btn');
+      if (resolveBtn) {
+        try {
+          await api(`/api/comments/${resolveBtn.dataset.id}/resolve`, { method: 'POST' });
+          await refreshCommentsUI();
+        } catch (err) { toast(err.message); }
+      }
+    });
+  }
+
   // Composer + @-mention picker
   const ta = $('#composer-text');
   const picker = $('#picker');
@@ -2547,6 +3096,7 @@ function wireIssueDetail(app, issue, timeline) {
         type: 'comment',
         attachment_ids: attachmentIds,
       };
+      if (replyTo) body.parent_id = replyTo.id;
       await api(`/api/issues/${issue.id}/comments`, {
         method: 'POST',
         body: JSON.stringify(body),
@@ -2555,16 +3105,18 @@ function wireIssueDetail(app, issue, timeline) {
       pendingFiles.length = 0;
       renderChips();
       closePicker();
+      replyTo = null;
+      updateReplyIndicator();
       // Re-fetch timeline (comments + activities). Live event listeners will
       // also fire from the WS broadcast, but a direct re-fetch removes the
       // round-trip blink for the sender.
-      const fresh = await api(`/api/issues/${issue.id}/timeline`);
-      $('#comments').innerHTML = (fresh || []).map(renderTimelineEntry).join('');
+      timeline = await api(`/api/issues/${issue.id}/timeline`) || [];
+      $('#comments').innerHTML = renderTimelineList(timeline);
       hydrateAttachments($('#comments'));
-      const commentCount = (fresh || []).filter(t => t.type === 'comment').length;
+      const commentCount = timeline.filter(t => t.type === 'comment').length;
       const heading = document.querySelector('#detail h3');
       if (heading) heading.textContent = `History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})`;
-      refreshQuickActions(issue, fresh || []);
+      refreshQuickActions(issue, timeline);
       toast('Sent');
     } catch (e) {
       console.error('[send] failed', e);
