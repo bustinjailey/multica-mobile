@@ -15,6 +15,7 @@ This repo is a monorepo with two parts:
 - ➕ Create new issue (title, description, status, priority, assignee)
 - 💬 Comment on issues with `@`-mention picker for agents and members (auto-triggers agent tasks server-side)
 - 💬 Reply threading, emoji reactions, and resolve/collapse on comment threads
+- 🔗 Linked pull requests, persistent agent-run history (survives after the active session ends), and parent/sub-issue navigation on the issue detail view
 - 📲 Installable to home screen on iOS/Android (PWA)
 
 ## How it works

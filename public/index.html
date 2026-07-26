@@ -220,6 +220,52 @@
   }
   .link-btn:hover { color: var(--accent-2); }
 
+  /* Runs / sessions history */
+  .runs-section {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 8px 12px; margin-bottom: 12px;
+  }
+  .runs-section summary {
+    cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text);
+    list-style: none;
+  }
+  .runs-section summary::-webkit-details-marker { display: none; }
+  .runs-list { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+  .run-row { display: flex; gap: 8px; align-items: flex-start; }
+  .run-dot {
+    width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto;
+    background: var(--accent-2);
+  }
+  .run-dot.run-failed { background: var(--danger); }
+  .run-line { font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  .run-meta { font-size: 12px; color: var(--muted); }
+
+  /* Linked pull requests */
+  .pr-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+  .pr-row {
+    display: flex; gap: 8px; align-items: flex-start; padding: 8px 4px;
+    border-radius: 8px; text-decoration: none; color: inherit;
+  }
+  .pr-row:hover { background: var(--surface-2); }
+  .pr-icon { font-size: 13px; line-height: 1.4; }
+  .pr-title { font-size: 13px; font-weight: 600; word-break: break-word; }
+  .pr-meta { font-size: 12px; color: var(--muted); }
+
+  /* Linked issues (parent + sub-issues) */
+  .linked-issues { margin-bottom: 12px; }
+  .linked-issues-label {
+    font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.03em; margin: 10px 0 4px;
+  }
+  .linked-issues-label:first-child { margin-top: 0; }
+  .linked-issue-row {
+    display: flex; gap: 8px; align-items: baseline; padding: 6px 4px;
+    border-radius: 8px; cursor: pointer;
+  }
+  .linked-issue-row:hover { background: var(--surface-2); }
+  .linked-issue-row .ident { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .linked-issue-row .title { flex: 1; font-size: 13px; font-weight: 500; word-break: break-word; }
+
   /* Forms */
   .field { margin-bottom: 12px; }
   .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
@@ -423,6 +469,7 @@ const state = {
   inboxUnread: 0,
   activeTasks: {},      // issue_id → { task_id, agent_id, agent_name, summary, started_at }
   taskMessages: {},     // task_id → [TaskMessagePayload, ...] (for the activity log)
+  allTasks: {},         // issue_id → [AgentTaskResponse, ...] (full run history, any status)
   wsStatus: 'offline',  // 'offline' | 'connecting' | 'online'
   viewSubs: [],         // event-bus unsubscribers for current view
   ws: null,
@@ -1210,7 +1257,7 @@ function switchToWorkspace(ws) {
   };
   localStorage.setItem(LS.ws, JSON.stringify(state.workspace));
   state.agents = []; state.members = []; state.agentsById = {}; state.membersById = {};
-  state.activeTasks = {}; state.taskMessages = {};
+  state.activeTasks = {}; state.taskMessages = {}; state.allTasks = {};
   if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
   return true;
 }
@@ -1951,12 +1998,15 @@ async function viewIssue(app, issueId, _query) {
       if (!resolved) throw new Error(`Issue ${issueId} not found`);
       issueId = resolved;
     }
-    let issue, timeline, activeTask;
+    let issue, timeline, activeTask, prsResp, allTasksResp, childrenResp;
     try {
-      [issue, timeline, activeTask] = await Promise.all([
+      [issue, timeline, activeTask, prsResp, allTasksResp, childrenResp] = await Promise.all([
         api(`/api/issues/${issueId}`),
         api(`/api/issues/${issueId}/timeline`),
         api(`/api/issues/${issueId}/active-task`).catch(() => null),
+        api(`/api/issues/${issueId}/pull-requests`).catch(() => null),
+        api(`/api/issues/${issueId}/task-runs`).catch(() => null),
+        api(`/api/issues/${issueId}/children`).catch(() => null),
       ]);
     } catch (e) {
       // Fallback for push notifications delivered before the relay started
@@ -1979,10 +2029,18 @@ async function viewIssue(app, issueId, _query) {
       throw e;
     }
     await applyActiveTaskBackfill(issueId, activeTask);
+    state.allTasks[issueId] = Array.isArray(allTasksResp) ? allTasksResp : [];
+    const prs = prsResp?.pull_requests || [];
+    const children = childrenResp?.issues || [];
+    let parent = null;
+    if (issue.parent_issue_id) {
+      try { parent = await api(`/api/issues/${issue.parent_issue_id}`); } catch { /* parent may be inaccessible */ }
+    }
     document.querySelector('header.top h1').textContent = issue.identifier;
-    $('#detail').innerHTML = renderIssueDetail(issue, timeline || []);
+    $('#detail').innerHTML = renderIssueDetail(issue, timeline || [], { prs, parent, children });
     wireIssueDetail(app, issue, timeline || []);
     wireIssueLive(app, issue);
+    wireLinkedIssueNav(app, parent, children);
   } catch (e) {
     $('#detail').innerHTML = `<div class="err">${escapeHtml(e.message)}</div>`;
   }
@@ -2078,6 +2136,100 @@ function focusActivityLog() {
   target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+// ===================== Runs / sessions history =====================
+// The active-task banner above disappears the moment a task finishes —
+// that's fine while it's running, but it means the *only* record of an
+// agent session vanishes with it. This section is the persistent fallback:
+// once an issue has ever had a run, a tappable "Runs · N" row stays visible
+// (collapsed) even after every task is terminal, so history is never a dead
+// end. Mirrors apps/mobile's <AgentActivityRow> "Working / Runs · N / null"
+// three-state pattern, minus the avatar stack.
+const TASK_STATUS_LABEL = {
+  pending: 'Queued', queued: 'Queued', dispatched: 'Starting', running: 'Running',
+  waiting_local_directory: 'Waiting', completed: 'Completed', done: 'Completed',
+  failed: 'Failed', errored: 'Failed', cancelled: 'Cancelled',
+};
+function renderRunsSection(issueId) {
+  if (state.activeTasks[issueId]) return ''; // active banner already covers this case
+  const tasks = state.allTasks[issueId] || [];
+  const past = tasks.filter(t => TERMINAL_TASK_STATUSES.has(t.status));
+  if (!past.length) return '';
+  const ordered = past.slice().sort((a, b) => new Date(b.completed_at || b.started_at || b.dispatched_at || 0) - new Date(a.completed_at || a.started_at || a.dispatched_at || 0));
+  return `
+    <details class="runs-section">
+      <summary>🕓 Runs · ${past.length}</summary>
+      <div class="runs-list">${ordered.map(renderRunRow).join('')}</div>
+    </details>`;
+}
+function renderRunRow(t) {
+  const name = t.agent?.name || state.agentsById[t.agent_id]?.name || 'agent';
+  const failed = t.status === 'failed' || t.status === 'errored';
+  const when = fmtDate(t.completed_at || t.started_at || t.dispatched_at || t.created_at);
+  const errText = failed ? (t.failure_reason || t.error || '') : '';
+  return `
+    <div class="run-row">
+      <span class="run-dot${failed ? ' run-failed' : ''}"></span>
+      <div style="flex:1;min-width:0;">
+        <div class="run-line"><strong>${escapeHtml(name)}</strong> <span class="pill">${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}</span></div>
+        <div class="run-meta">${escapeHtml(when)}${errText ? ` · ${escapeHtml(errText.length > 140 ? errText.slice(0, 140) + '…' : errText)}` : ''}</div>
+      </div>
+    </div>`;
+}
+
+// ===================== Linked pull requests =====================
+const PR_STATE_ICON = { open: '🟢', draft: '⚪', merged: '🟣', closed: '🔴' };
+const prettyPRState = (s) => ({ open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed' }[s] || s || '');
+function renderPRList(prs) {
+  if (!prs || !prs.length) return '';
+  return `
+    <h3 style="font-size:14px;color:var(--muted);margin:0 0 8px;">Pull Requests</h3>
+    <div class="pr-list">
+      ${prs.map(pr => `
+        <a class="pr-row" href="${escapeHtml(pr.html_url)}" target="_blank" rel="noreferrer noopener">
+          <span class="pr-icon">${PR_STATE_ICON[pr.state] || '⚪'}</span>
+          <div style="flex:1;min-width:0;">
+            <div class="pr-title">${escapeHtml(pr.title)}</div>
+            <div class="pr-meta">${escapeHtml(pr.repo_owner)}/${escapeHtml(pr.repo_name)}#${pr.number} · ${escapeHtml(prettyPRState(pr.state))}${pr.author_login ? ` · @${escapeHtml(pr.author_login)}` : ''}</div>
+          </div>
+        </a>`).join('')}
+    </div>`;
+}
+
+// ===================== Linked issues (parent + children) =====================
+function renderLinkedIssueRow(li) {
+  return `
+    <div class="linked-issue-row" data-nav-id="${escapeHtml(li.id)}" role="button" tabindex="0">
+      <span class="pill status-${li.status}">${prettyStatus(li.status)}</span>
+      <span class="ident">${escapeHtml(li.identifier)}</span>
+      <span class="title">${escapeHtml(li.title)}</span>
+    </div>`;
+}
+function renderLinkedIssuesSection(parent, children) {
+  const hasParent = !!parent;
+  const hasChildren = !!(children && children.length);
+  if (!hasParent && !hasChildren) return '';
+  return `
+    <div class="linked-issues">
+      ${hasParent ? `<div class="linked-issues-label">Parent</div>${renderLinkedIssueRow(parent)}` : ''}
+      ${hasChildren ? `<div class="linked-issues-label">Sub-issues (${children.length})</div>${children.map(renderLinkedIssueRow).join('')}` : ''}
+    </div>`;
+}
+// Click/keyboard handler for parent/sub-issue rows in the linked-issues section.
+// Reuses openIssueCard so cross-workspace parents/children (rare, but possible)
+// switch state.workspace the same way issue-list card taps do.
+function wireLinkedIssueNav(app, parent, children) {
+  const byId = new Map();
+  if (parent) byId.set(parent.id, parent);
+  (children || []).forEach(c => byId.set(c.id, c));
+  $$('#linked-issues-section .linked-issue-row').forEach(el => {
+    const issue = byId.get(el.dataset.navId);
+    if (!issue) return;
+    const go = () => openIssueCard(issue);
+    el.onclick = go;
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+  });
+}
+
 // Wires up live event handlers for the issue detail view. Each subscription
 // pushes its unsubscriber into state.viewSubs so render() can clean them up
 // when the user navigates away.
@@ -2127,6 +2279,34 @@ function wireIssueLive(app, issue) {
     if (summary) summary.textContent = `Agent activity (${(state.taskMessages[task_id] || []).length})`;
     if (wasNearBottom) list.scrollTop = list.scrollHeight;
   }));
+
+  // Runs history — re-fetch on any terminal task event for this issue so the
+  // persistent history panel picks up what the active banner just dropped.
+  const refreshRuns = async (payload) => {
+    const iid = payload?.issue_id || payload?.task?.issue_id;
+    if (iid && iid !== issueId) return;
+    try {
+      const fresh = await api(`/api/issues/${issueId}/task-runs`);
+      state.allTasks[issueId] = Array.isArray(fresh) ? fresh : [];
+      const el = document.getElementById('runs-section');
+      if (el) el.innerHTML = renderRunsSection(issueId);
+    } catch (e) { /* ignore */ }
+  };
+  ['task:completed', 'task:failed', 'task:cancelled'].forEach(t => state.viewSubs.push(bus.on(t, refreshRuns)));
+
+  // Linked PRs — re-fetch on link/update/unlink. Payload shape is inconsistent
+  // across server emit sites (a `linked_issue_ids` array on link, a singular
+  // `issue_id` on CI-status updates), so check both.
+  const refreshPRs = async (payload) => {
+    const matches = payload?.issue_id === issueId || (payload?.linked_issue_ids || []).includes(issueId);
+    if (!matches) return;
+    try {
+      const fresh = await api(`/api/issues/${issueId}/pull-requests`);
+      const el = document.getElementById('pr-section');
+      if (el) el.innerHTML = renderPRList(fresh?.pull_requests || []);
+    } catch (e) { /* ignore */ }
+  };
+  ['pull_request:linked', 'pull_request:updated', 'pull_request:unlinked'].forEach(t => state.viewSubs.push(bus.on(t, refreshPRs)));
 
   // Timeline — re-fetch on any event that could change the merged stream:
   // comments, reactions, activity (assignment/status/priority changes).
@@ -2186,6 +2366,11 @@ function wireIssueLive(app, issue) {
         if (log) log.innerHTML = renderActivityLog(issueId);
         wireBannerTap();
       }
+      // Runs history + linked PRs don't have their own WS-drop detection, so
+      // catch-up always re-fetches them too — cheap, and keeps them correct
+      // after a backgrounded tab misses a task/PR event entirely.
+      refreshRuns({ issue_id: issueId });
+      refreshPRs({ issue_id: issueId });
       const el = document.getElementById('comments');
       if (el) {
         el.innerHTML = renderTimelineList(fresh)
@@ -2209,9 +2394,10 @@ function wireIssueLive(app, issue) {
   state.viewSubs.push(() => clearInterval(pollId));
 }
 
-function renderIssueDetail(i, timeline) {
+function renderIssueDetail(i, timeline, extra = {}) {
   const assigneeOptions = buildAssigneeOptions(i.assignee_type, i.assignee_id);
   const commentCount = timeline.filter(t => t.type === 'comment').length;
+  const prs = extra.prs || [];
   return `
     <h2 style="margin:0 0 8px;font-size:20px;line-height:1.3;word-break:break-word;">${escapeHtml(i.title)}</h2>
     ${(i.labels && i.labels.length) || i.due_date ? `<div class="meta" style="margin:0 0 12px;">${renderLabelChips(i.labels)}${renderDueChip(i)}</div>` : ''}
@@ -2226,6 +2412,9 @@ function renderIssueDetail(i, timeline) {
     </div>
     <div id="active-banner">${renderActiveBanner(i.id)}</div>
     <div id="activity-log">${renderActivityLog(i.id)}</div>
+    <div id="runs-section">${renderRunsSection(i.id)}</div>
+    <div id="pr-section">${renderPRList(prs)}</div>
+    <div id="linked-issues-section">${renderLinkedIssuesSection(extra.parent, extra.children)}</div>
     ${i.description || (i.attachments && i.attachments.length) ? `<div class="comment">${i.description ? `<div class="body">${renderCommentBody(i.description)}</div>` : ''}${renderAttachments(i.attachments)}</div>` : ''}
 
     <h3 style="font-size:14px;color:var(--muted);margin:20px 0 8px;">History (${commentCount} ${commentCount === 1 ? 'comment' : 'comments'})</h3>
