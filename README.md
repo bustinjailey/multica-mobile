@@ -16,6 +16,7 @@ This repo is a monorepo with two parts:
 - 💬 Comment on issues with `@`-mention picker for agents and members (auto-triggers agent tasks server-side)
 - 💬 Reply threading, emoji reactions, and resolve/collapse on comment threads
 - 🔗 Linked pull requests, persistent agent-run history (survives after the active session ends), and parent/sub-issue navigation on the issue detail view
+- ⏳🤖 Queued/in-progress agent indicator on issue cards, board cards, and the detail view — a distinct glyph, not just a hover tooltip, since mobile has no hover
 - 📲 Installable to home screen on iOS/Android (PWA)
 
 ## How it works
