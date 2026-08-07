@@ -730,6 +730,7 @@ function handleEvent(type, payload) {
           agent_name: state.agentsById[aid]?.name || 'agent',
           summary: payload?.title ? `started: ${payload.title}` : 'starting…',
           started_at: payload?.dispatched_at || payload?.task?.dispatched_at || new Date().toISOString(),
+          status: 'running',
         };
         if (tid && !state.taskMessages[tid]) state.taskMessages[tid] = [];
         bus.emit('activeTasks:changed', { issue_id: iid });
@@ -747,6 +748,7 @@ function handleEvent(type, payload) {
           agent_name: cur.agent_name || state.agentsById[payload?.agent_id]?.name || 'agent',
           summary: payload?.summary || cur.summary || '…',
           started_at: cur.started_at || new Date().toISOString(),
+          status: 'running',
         };
         bus.emit('activeTasks:changed', { issue_id: iid });
       }
@@ -1596,10 +1598,11 @@ function refreshIssuesList() {
     let badge = el.querySelector('.row1 span[title]');
     if (active && !badge) {
       const titleEl = el.querySelector('.row1');
-      titleEl.insertAdjacentHTML('beforeend', `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">🤖</span>`);
+      titleEl.insertAdjacentHTML('beforeend', `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">${agentBadgeIcon(active)}</span>`);
       el.style.borderColor = 'var(--accent)';
     } else if (active && badge) {
       badge.title = active.agent_name + ': ' + active.summary;
+      badge.textContent = agentBadgeIcon(active);
     } else if (!active && badge) {
       badge.remove();
       el.style.borderColor = '';
@@ -1744,10 +1747,11 @@ function refreshBoardCards() {
     let badge = el.querySelector('.row1 span[title]');
     if (active && !badge) {
       const titleEl = el.querySelector('.row1');
-      titleEl.insertAdjacentHTML('beforeend', `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">🤖</span>`);
+      titleEl.insertAdjacentHTML('beforeend', `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">${agentBadgeIcon(active)}</span>`);
       el.style.borderColor = 'var(--accent)';
     } else if (active && badge) {
       badge.title = active.agent_name + ': ' + active.summary;
+      badge.textContent = agentBadgeIcon(active);
     } else if (!active && badge) {
       badge.remove();
       el.style.borderColor = '';
@@ -1840,6 +1844,12 @@ async function viewBoard(app) {
   }));
 }
 
+// Queued vs running is shown with a distinct glyph (⏳ vs 🤖), not just via
+// `title`, since mobile browsers have no hover state — a tooltip-only signal
+// is invisible on a phone.
+function agentBadgeIcon(active) {
+  return active?.status === 'queued' ? '⏳' : '🤖';
+}
 function renderIssueCard(i) {
   const assigneeName = assigneeLabel(i.assignee_type, i.assignee_id);
   const active = state.activeTasks[i.id];
@@ -1852,7 +1862,7 @@ function renderIssueCard(i) {
       <div class="row1">
         <div class="ident">${escapeHtml(i.identifier)}</div>
         <div class="title">${escapeHtml(i.title)}</div>
-        ${active ? `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">🤖</span>` : ''}
+        ${active ? `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">${agentBadgeIcon(active)}</span>` : ''}
       </div>
       <div class="meta">
         <span class="pill status-${i.status}">${prettyStatus(i.status)}</span>
@@ -1957,6 +1967,10 @@ async function hydrateActiveTasksFromIssues(issues, opts = {}) {
   return false;
 }
 
+// Statuses where the task is waiting for an agent to pick it up — as opposed
+// to 'dispatched'/'running'/etc. where an agent is actively on it. Drives the
+// queued-vs-running distinction on badges/banners (⏳ vs 🤖).
+const QUEUED_TASK_STATUSES = new Set(['pending', 'queued']);
 async function applyActiveTaskBackfill(issueId, activeTask) {
   const isLive = activeTask && activeTask.id && !TERMINAL_TASK_STATUSES.has(activeTask.status);
   if (!isLive) {
@@ -1964,6 +1978,7 @@ async function applyActiveTaskBackfill(issueId, activeTask) {
     return;
   }
   const existing = state.activeTasks[issueId];
+  const isQueued = QUEUED_TASK_STATUSES.has(activeTask.status);
   state.activeTasks[issueId] = {
     task_id: activeTask.id,
     agent_id: activeTask.agent_id,
@@ -1971,9 +1986,11 @@ async function applyActiveTaskBackfill(issueId, activeTask) {
       || state.agentsById[activeTask.agent_id]?.name
       || existing?.agent_name
       || 'agent',
-    summary: existing?.summary
-      || (activeTask.status === 'pending' || activeTask.status === 'queued' ? 'queued…' : 'running…'),
+    summary: (existing?.summary && !(existing.summary === 'queued…' && !isQueued))
+      ? existing.summary
+      : (isQueued ? 'queued…' : 'running…'),
     started_at: activeTask.started_at || activeTask.dispatched_at || activeTask.created_at || existing?.started_at,
+    status: isQueued ? 'queued' : 'running',
   };
   // Hydrate the message log only if we don't already have it (cheap re-entry
   // from visibility-change refresh shouldn't refetch on every wake).
@@ -2114,11 +2131,13 @@ function renderActiveBanner(issueId) {
   const a = state.activeTasks[issueId];
   if (!a) return '';
   const elapsed = a.started_at ? fmtDate(a.started_at) : '';
+  const queued = a.status === 'queued';
+  const verb = queued ? 'queued' : 'working';
   return `
     <div id="active-banner-card" role="button" tabindex="0" style="background:var(--surface-2);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin-bottom:12px;display:flex;gap:8px;align-items:center;cursor:pointer;">
-      <span style="font-size:18px;line-height:1;">🤖</span>
+      <span style="font-size:18px;line-height:1;">${agentBadgeIcon(a)}</span>
       <div style="flex:1;min-width:0;">
-        <div style="font-weight:600;font-size:13px;">${escapeHtml(a.agent_name || 'agent')} working${elapsed ? ` · ${escapeHtml(elapsed)}` : ''}</div>
+        <div style="font-weight:600;font-size:13px;">${escapeHtml(a.agent_name || 'agent')} ${verb}${elapsed ? ` · ${escapeHtml(elapsed)}` : ''}</div>
         <div style="font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(a.summary || '…')}</div>
       </div>
       <span style="font-size:18px;line-height:1;color:var(--muted);">›</span>
