@@ -250,6 +250,13 @@
   .pr-icon { font-size: 13px; line-height: 1.4; }
   .pr-title { font-size: 13px; font-weight: 600; word-break: break-word; }
   .pr-meta { font-size: 12px; color: var(--muted); }
+  /* A PR handed to the merge queue is the one PR state worth spotting from
+     across the room, so it gets the same accent treatment as the active-agent
+     banner rather than another muted meta line. */
+  .pr-row.pr-queued { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
+  .pr-row.pr-queued .pr-queue-label { color: var(--accent-2); font-weight: 600; }
+  .pr-row.pr-queue-blocked { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--warning); }
+  .pr-row.pr-queue-blocked .pr-queue-label { color: var(--warning); font-weight: 600; }
 
   /* Linked issues (parent + sub-issues) */
   .linked-issues { margin-bottom: 12px; }
@@ -2198,19 +2205,50 @@ function renderRunRow(t) {
 // ===================== Linked pull requests =====================
 const PR_STATE_ICON = { open: '🟢', draft: '⚪', merged: '🟣', closed: '🔴' };
 const prettyPRState = (s) => ({ open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed' }[s] || s || '');
+
+// Merge-queue membership. A queued PR is still an *open* PR — `state` never
+// changes — and GitHub reports its merge_state_status as `blocked`, because
+// branch protection routes the merge through the queue. So the plain green
+// "Open" row hides the only fact that matters here: the PR has been handed off
+// and is on its way in. `merge_queue_state` is the sole carrier of that fact.
+//
+// Precedence mirrors the desktop app's deriveMergeStatus():
+//   1. conflict (mergeable conflicting / merge_state dirty) → not queued.
+//      An entry GitHub is about to evict is not "on its way in".
+//   2. merge_queue_state unmergeable → queue blocked
+//   3. any other merge_queue_state   → in merge queue
+// Terminal PRs are excluded — the state icon already says merged / closed.
+// Every field is optional: an older backend omits them all and every PR falls
+// back to its plain state row, so an absent field never fabricates a queue.
+const PR_QUEUE_DISPLAY = {
+  queued: { icon: '🔵', label: 'In merge queue', cls: 'pr-queued' },
+  queued_unmergeable: { icon: '⚠️', label: 'Merge queue blocked', cls: 'pr-queue-blocked' },
+};
+function prQueueDisplay(pr) {
+  if (!pr || pr.snapshot_available === false) return null;
+  if (pr.state === 'merged' || pr.state === 'closed') return null;
+  if (pr.mergeable === 'conflicting' || pr.merge_state_status === 'dirty') return null;
+  const queue = pr.merge_queue_state || null;
+  if (!queue) return null;
+  return PR_QUEUE_DISPLAY[queue === 'unmergeable' ? 'queued_unmergeable' : 'queued'];
+}
+
 function renderPRList(prs) {
   if (!prs || !prs.length) return '';
   return `
     <h3 style="font-size:14px;color:var(--muted);margin:0 0 8px;">Pull Requests</h3>
     <div class="pr-list">
-      ${prs.map(pr => `
-        <a class="pr-row" href="${escapeHtml(pr.html_url)}" target="_blank" rel="noreferrer noopener">
-          <span class="pr-icon">${PR_STATE_ICON[pr.state] || '⚪'}</span>
+      ${prs.map(pr => {
+        const q = prQueueDisplay(pr);
+        return `
+        <a class="pr-row${q ? ` ${q.cls}` : ''}" href="${escapeHtml(pr.html_url)}" target="_blank" rel="noreferrer noopener">
+          <span class="pr-icon">${q ? q.icon : (PR_STATE_ICON[pr.state] || '⚪')}</span>
           <div style="flex:1;min-width:0;">
             <div class="pr-title">${escapeHtml(pr.title)}</div>
-            <div class="pr-meta">${escapeHtml(pr.repo_owner)}/${escapeHtml(pr.repo_name)}#${pr.number} · ${escapeHtml(prettyPRState(pr.state))}${pr.author_login ? ` · @${escapeHtml(pr.author_login)}` : ''}</div>
+            <div class="pr-meta">${escapeHtml(pr.repo_owner)}/${escapeHtml(pr.repo_name)}#${pr.number} · ${q ? `<span class="pr-queue-label">${escapeHtml(q.label)}</span>` : escapeHtml(prettyPRState(pr.state))}${pr.author_login ? ` · @${escapeHtml(pr.author_login)}` : ''}</div>
           </div>
-        </a>`).join('')}
+        </a>`;
+      }).join('')}
     </div>`;
 }
 
