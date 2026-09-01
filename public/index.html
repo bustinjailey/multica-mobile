@@ -510,10 +510,19 @@ async function api(path, opts = {}) {
 // (with an `id` field that the caller passes back as `attachment_ids` on the
 // subsequent comment / issue create).
 //
+// Pass `opts.issueId` whenever the issue already exists. The upload lands as a
+// row with `issue_id = NULL` unless the multipart form carries the field, and
+// the server links attachments to a new comment with a query that filters on
+// `issue_id = <the comment's issue>` — so an unbound row silently matches
+// nothing and the attachment is dropped without an error. Creating a new issue
+// is the exception: there is no id yet, and `attachment_ids` on issue create
+// binds the rows instead.
+//
 // Note: do not set Content-Type — the browser must set the multipart boundary.
 async function uploadFile(file, opts = {}) {
   const fd = new FormData();
   fd.append('file', file, file.name);
+  if (opts.issueId) fd.append('issue_id', opts.issueId);
   let r;
   try {
     r = await fetch(apiBase() + '/api/upload-file', {
@@ -3141,7 +3150,7 @@ function wireIssueDetail(app, issue, timeline) {
       const attachmentIds = [];
       for (let i = 0; i < pendingFiles.length; i++) {
         setSendLabel(`Uploading ${i + 1}/${pendingFiles.length}…`);
-        const att = await uploadFile(pendingFiles[i]);
+        const att = await uploadFile(pendingFiles[i], { issueId: issue.id });
         attachmentIds.push(att.id);
       }
       setSendLabel('Send');
