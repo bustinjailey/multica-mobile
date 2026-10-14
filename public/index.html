@@ -251,12 +251,13 @@
   .pr-title { font-size: 13px; font-weight: 600; word-break: break-word; }
   .pr-meta { font-size: 12px; color: var(--muted); }
   /* A PR handed to the merge queue is the one PR state worth spotting from
-     across the room, so it gets the same accent treatment as the active-agent
-     banner rather than another muted meta line. */
-  .pr-row.pr-queued { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
-  .pr-row.pr-queued .pr-queue-label { color: var(--accent-2); font-weight: 600; }
-  .pr-row.pr-queue-blocked { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--warning); }
-  .pr-row.pr-queue-blocked .pr-queue-label { color: var(--warning); font-weight: 600; }
+     across the room, so it gets a bar rather than another muted meta line.
+     Amber matches GitHub's "Queued" state label; an entry the queue cannot
+     merge is about to be evicted, so it reads as a problem instead. */
+  .pr-row.pr-queued { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--warning); }
+  .pr-row.pr-queued .pr-queue-label { color: var(--warning); font-weight: 600; }
+  .pr-row.pr-queue-blocked { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--danger); }
+  .pr-row.pr-queue-blocked .pr-queue-label { color: var(--danger); font-weight: 600; }
 
   /* Linked issues (parent + sub-issues) */
   .linked-issues { margin-bottom: 12px; }
@@ -2365,13 +2366,14 @@ const prettyPRState = (s) => ({ open: 'Open', draft: 'Draft', merged: 'Merged', 
 //   1. conflict (mergeable conflicting / merge_state dirty) → not queued.
 //      An entry GitHub is about to evict is not "on its way in".
 //   2. merge_queue_state unmergeable → queue blocked
-//   3. any other merge_queue_state   → in merge queue
+//   3. any other merge_queue_state   → queued
 // Terminal PRs are excluded — the state icon already says merged / closed.
 // Every field is optional: an older backend omits them all and every PR falls
 // back to its plain state row, so an absent field never fabricates a queue.
+// Labels follow GitHub, which shows a queued PR's state as "Queued".
 const PR_QUEUE_DISPLAY = {
-  queued: { icon: '🔵', label: 'In merge queue', cls: 'pr-queued' },
-  queued_unmergeable: { icon: '⚠️', label: 'Merge queue blocked', cls: 'pr-queue-blocked' },
+  queued: { icon: '🟡', label: 'Queued', cls: 'pr-queued' },
+  queued_unmergeable: { icon: '⚠️', label: 'Queue blocked', cls: 'pr-queue-blocked' },
 };
 function prQueueDisplay(pr) {
   if (!pr || pr.snapshot_available === false) return null;
