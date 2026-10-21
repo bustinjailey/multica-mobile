@@ -74,6 +74,6 @@ paired with a `.timer` on `OnUnitActiveSec=5min`. A cron entry or a GitHub `push
 ## Notes / limitations (V1)
 
 - No realtime updates — the app refreshes the inbox on focus. WebSocket support could be added later (the server's `/ws` accepts the same PAT).
-- Status enum is hard-coded to `backlog | todo | in_progress | in_review | done | cancelled`. If Multica adds new statuses, update `STATUSES` in `index.html`.
+- Statuses are loaded per workspace from `/api/issue-statuses`, so custom ones (e.g. `awaiting_ci`) show up in filters, board lanes and the status picker, slotted after their system category.
 - Assignee dropdown lists agents and members fetched at app startup. "Reload agents/members" in Settings forces a refresh.
 - Icon files (`icon-192.png`, `icon-512.png`) are referenced by the PWA manifest but not yet generated; "Add to Home Screen" will fall back to a generic icon.
