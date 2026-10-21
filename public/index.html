@@ -455,7 +455,8 @@ const INBOX_STATUS_PRIORITY = {
   cancelled: 20,
   done: 10,
 };
-const inboxStatusWeight = (s) => INBOX_STATUS_PRIORITY[s] ?? 50;
+const inboxStatusWeight = (s) =>
+  INBOX_STATUS_PRIORITY[s] ?? (s ? INBOX_STATUS_PRIORITY[statusCategory(s)] : undefined) ?? 50;
 
 // Path of the push relay on the same origin (Caddy proxies /m/push/* to the
 // multica-mobile-push service on LXC 122).
@@ -483,6 +484,8 @@ const state = {
   wsStatus: 'offline',  // 'offline' | 'connecting' | 'online'
   viewSubs: [],         // event-bus unsubscribers for current view
   ws: null,
+  statusDefs: {},      // status key → /api/issue-statuses definition (union of workspaces)
+  statusesBySlug: {},  // workspace slug → that workspace's definitions
 };
 
 // ===================== HTTP helpers =====================
@@ -1049,6 +1052,67 @@ async function loadWorkspaceData() {
     if (m.id) state.membersById[m.id] = m;
     if (m.user_id) state.membersById[m.user_id] = m;
   }
+  await loadIssueStatuses();
+}
+
+// ===================== Issue statuses =====================
+// Workspaces can define custom statuses (e.g. snapview's `awaiting_ci`) via
+// /api/issue-statuses. Each one sits in one of the seven system categories, so
+// open-ness, ranking and board placement key off the category; only the label
+// and colour come from the definition. Cached per workspace slug (they rarely
+// change) and survive workspace switches; the 'all' scope uses the union.
+const SYSTEM_STATUSES = ['backlog', 'todo', 'in_progress', 'in_review', 'blocked', 'done', 'cancelled'];
+const SYSTEM_STATUS_SET = new Set(SYSTEM_STATUSES);
+const SYSTEM_STATUS_LABELS = {
+  backlog: 'Backlog', todo: 'Todo', in_progress: 'In Progress',
+  in_review: 'In Review', blocked: 'Blocked', done: 'Done', cancelled: 'Cancelled',
+};
+async function loadIssueStatuses() {
+  const list = state.workspaces?.length ? state.workspaces : (state.workspace ? [state.workspace] : []);
+  await Promise.all(list.filter(ws => ws.slug && !state.statusesBySlug[ws.slug]).map(async ws => {
+    try {
+      const r = await api('/api/issue-statuses', { workspaceSlug: ws.slug });
+      const defs = (r?.statuses || []).filter(d => d && d.key && !d.archived_at);
+      state.statusesBySlug[ws.slug] = defs;
+      for (const d of defs) if (!state.statusDefs[d.key]) state.statusDefs[d.key] = d;
+    } catch (e) { console.warn('issue-statuses', ws.slug, e); }
+  }));
+}
+// Unknown custom keys (definitions not loaded yet) count as in-progress, so an
+// issue is never dropped from the open views just because we lack its def.
+function statusCategory(s) {
+  if (SYSTEM_STATUS_SET.has(s)) return s;
+  const cat = state.statusDefs[s]?.category;
+  return SYSTEM_STATUS_SET.has(cat) ? cat : 'in_progress';
+}
+const isOpenStatus = (s) => { const c = statusCategory(s); return c !== 'done' && c !== 'cancelled'; };
+// Custom statuses of a category, in workspace position order. `slug` narrows to
+// one workspace; omitted means every loaded workspace.
+function customStatusesIn(category, slug) {
+  const defs = slug ? (state.statusesBySlug[slug] || []) : Object.values(state.statusDefs);
+  return defs
+    .filter(d => !SYSTEM_STATUS_SET.has(d.key) && d.category === category)
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    .map(d => d.key);
+}
+// System statuses in canonical order, each followed by its custom statuses.
+function expandStatuses(base, slug) {
+  return base.flatMap(s => [s, ...customStatusesIn(s, slug)]);
+}
+// Statuses an issue in `slug` can be moved to. `current` is kept even when it
+// isn't defined there, so the picker never silently rewrites it.
+function statusesFor(slug, current) {
+  const out = expandStatuses(SYSTEM_STATUSES, slug || state.workspace?.slug);
+  if (current && !out.includes(current)) out.push(current);
+  return out;
+}
+const SAFE_COLOR_RE = /^#[0-9a-f]{3,8}$/i;
+function statusPill(s) {
+  const def = SYSTEM_STATUS_SET.has(s) ? null : state.statusDefs[s];
+  const color = def && SAFE_COLOR_RE.test(def.color || '') ? def.color : null;
+  const cls = `status-${escapeHtml(statusCategory(s))} status-${escapeHtml(s)}`;
+  const style = color ? ` style="color:${color};border-color:${color};"` : '';
+  return `<span class="pill ${cls}"${style}>${escapeHtml(prettyStatus(s))}</span>`;
 }
 
 async function refreshInboxBadge() {
@@ -1484,7 +1548,7 @@ function renderInboxItem(it, extraCount = 0) {
       ${body ? `<div style="font-size:13px;color:var(--muted);margin-top:4px;">${escapeHtml(body)}</div>` : ''}
       <div class="meta">
         <span>${escapeHtml(sub)}</span>
-        ${it.issue_status ? `<span class="pill status-${it.issue_status}">${prettyStatus(it.issue_status)}</span>` : ''}
+        ${it.issue_status ? statusPill(it.issue_status) : ''}
         <span style="margin-left:auto;">${fmtDate(it.created_at)}</span>
       </div>
     </div>`;
@@ -1505,15 +1569,11 @@ const SCOPE_OPTIONS = [
   ['all', 'All'],
 ];
 // Status filter — 'open' is the default and bundles every non-terminal state.
-const STATUS_OPTIONS = [
+// Custom workspace statuses slot in after their category.
+const STATUS_FILTER_ORDER = ['in_review', 'in_progress', 'blocked', 'todo', 'backlog', 'done', 'cancelled'];
+const statusFilterOptions = () => [
   ['open', 'Open'],
-  ['in_review', 'In Review'],
-  ['in_progress', 'In Progress'],
-  ['blocked', 'Blocked'],
-  ['todo', 'Todo'],
-  ['backlog', 'Backlog'],
-  ['done', 'Done'],
-  ['cancelled', 'Cancelled'],
+  ...expandStatuses(STATUS_FILTER_ORDER).map(s => [s, prettyStatus(s)]),
   ['any', 'All statuses'],
 ];
 const SORT_OPTIONS = [
@@ -1523,12 +1583,13 @@ const SORT_OPTIONS = [
   ['priority', 'Priority'],
   ['identifier', 'Identifier'],
 ];
-const NON_TERMINAL_STATUSES = new Set(['backlog', 'todo', 'in_progress', 'in_review', 'blocked']);
 // Lower = sorts to the top in the 'status' sort. Tracks how active a state is
 // from the user's POV — in_review (waiting on me) at top, done at bottom.
 const STATUS_RANK = {
   in_review: 0, in_progress: 1, blocked: 2, todo: 3, backlog: 4, done: 5, cancelled: 6,
 };
+// Custom statuses rank just after their category.
+const statusRank = (s) => STATUS_RANK[s] ?? ((STATUS_RANK[statusCategory(s)] ?? 98) + 0.5);
 const PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
 function readFilter() {
   return {
@@ -1549,7 +1610,7 @@ function writeFilter(f) {
 // one request, no row cap, returns every non-done/cancelled issue. That
 // replaced the old five-requests-per-status fan-out — the round-trip count is
 // what made the board slow to load across workspaces. open_only is now exactly
-// `status NOT IN (done, cancelled)`, matching NON_TERMINAL_STATUSES, so the
+// `status NOT IN (done, cancelled)`, matching isOpenStatus(), so the
 // historical blocked-exclusion drift that made us avoid it no longer applies.
 function buildIssueQueries(filter) {
   const base = () => {
@@ -1609,7 +1670,7 @@ async function fetchIssueWindow(filter, slug) {
   return merged;
 }
 function applyClientFilter(arr, filter) {
-  if (filter.status === 'open') return arr.filter(i => NON_TERMINAL_STATUSES.has(i.status));
+  if (filter.status === 'open') return arr.filter(i => isOpenStatus(i.status));
   return arr;
 }
 function sortIssues(arr, sort) {
@@ -1620,7 +1681,7 @@ function sortIssues(arr, sort) {
       break;
     case 'status':
       a.sort((x, y) => {
-        const dx = (STATUS_RANK[x.status] ?? 99) - (STATUS_RANK[y.status] ?? 99);
+        const dx = statusRank(x.status) - statusRank(y.status);
         if (dx !== 0) return dx;
         return (y.updated_at || '').localeCompare(x.updated_at || '');
       });
@@ -1741,7 +1802,7 @@ async function viewIssues(app) {
   const selectStyle = 'width:auto;min-height:36px;padding:6px 8px;font-size:13px;';
   const scopeOptions = SCOPE_OPTIONS.map(([v, l]) =>
     `<option value="${v}" ${filter.scope===v?'selected':''}>${l}</option>`).join('');
-  const statusOptions = STATUS_OPTIONS.map(([v, l]) =>
+  const statusOptions = statusFilterOptions().map(([v, l]) =>
     `<option value="${v}" ${filter.status===v?'selected':''}>${l}</option>`).join('');
   const sortOptions = SORT_OPTIONS.map(([v, l]) =>
     `<option value="${v}" ${filter.sort===v?'selected':''}>${l}</option>`).join('');
@@ -1797,7 +1858,9 @@ const BOARD_LANES = ['in_review', 'in_progress', 'blocked', 'todo', 'backlog'];
 // Done is rendered as a trailing lane but fetched separately from the open
 // lanes: it needs its own bounded, newest-first query (status=done) rather than
 // the open_only window, and it sits last so the active lanes lead.
-const BOARD_RENDER_LANES = [...BOARD_LANES, 'done'];
+// Custom open statuses (e.g. awaiting_ci) get their own lane after their
+// category's, so computed per render once status definitions have loaded.
+const boardRenderLanes = () => [...expandStatuses(BOARD_LANES), 'done'];
 
 // Snapshot the board's horizontal lane position + each lane's vertical card
 // scroll so a live re-render (active-task tick, issue create/update) doesn't
@@ -1863,16 +1926,19 @@ async function viewBoard(app) {
       fetchIssuesScoped({ ...filter, status: 'open' }),
       fetchIssuesScoped({ ...filter, status: 'done' }),
     ]);
-    const open = rawOpen.filter(i => NON_TERMINAL_STATUSES.has(i.status));
+    const open = rawOpen.filter(i => isOpenStatus(i.status));
     const done = rawDone.filter(i => i.status === 'done');
-    const byLane = Object.fromEntries(BOARD_RENDER_LANES.map(s => [s, []]));
-    for (const i of open) if (byLane[i.status]) byLane[i.status].push(i);
+    const lanes = boardRenderLanes();
+    const byLane = Object.fromEntries(lanes.map(s => [s, []]));
+    // A status with no lane (custom one whose def hasn't loaded) falls back
+    // to its category's lane rather than vanishing.
+    for (const i of open) (byLane[i.status] || byLane[statusCategory(i.status)])?.push(i);
     byLane.done = done;
-    for (const s of BOARD_RENDER_LANES) byLane[s] = sortIssues(byLane[s], 'updated');
-    $('#board').innerHTML = BOARD_RENDER_LANES.map(s => `
+    for (const s of lanes) byLane[s] = sortIssues(byLane[s], 'updated');
+    $('#board').innerHTML = lanes.map(s => `
       <section class="lane" data-status="${s}" style="flex:0 0 86vw;max-width:340px;scroll-snap-align:start;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;">
         <header style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
-          <span class="pill status-${s}">${prettyStatus(s)}</span>
+          ${statusPill(s)}
           <span style="margin-left:auto;font-size:12px;color:var(--muted);">${byLane[s].length}</span>
         </header>
         <div class="lane-cards" style="flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:8px;">
@@ -1929,7 +1995,7 @@ function renderIssueCard(i) {
         ${active ? `<span title="${escapeHtml(active.agent_name + ': ' + active.summary)}" style="font-size:14px;">${agentBadgeIcon(active)}</span>` : ''}
       </div>
       <div class="meta">
-        <span class="pill status-${i.status}">${prettyStatus(i.status)}</span>
+        ${statusPill(i.status)}
         ${i.priority && i.priority !== 'none' ? renderPriorityIcon(i.priority) : ''}
         ${renderLabelChips(i.labels)}
         ${renderDueChip(i)}
@@ -1940,11 +2006,8 @@ function renderIssueCard(i) {
     </div>`;
 }
 
-const STATUSES = ['backlog', 'todo', 'in_progress', 'in_review', 'blocked', 'done', 'cancelled'];
-const prettyStatus = (s) => ({
-  backlog: 'Backlog', todo: 'Todo', in_progress: 'In Progress',
-  in_review: 'In Review', blocked: 'Blocked', done: 'Done', cancelled: 'Cancelled',
-}[s] || s);
+const prettyStatus = (s) => SYSTEM_STATUS_LABELS[s] || state.statusDefs[s]?.name
+  || String(s).replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 
 function assigneeLabel(type, id) {
   if (!type || !id) return null;
@@ -2407,7 +2470,7 @@ function renderPRList(prs) {
 function renderLinkedIssueRow(li) {
   return `
     <div class="linked-issue-row" data-nav-id="${escapeHtml(li.id)}" role="button" tabindex="0">
-      <span class="pill status-${li.status}">${prettyStatus(li.status)}</span>
+      ${statusPill(li.status)}
       <span class="ident">${escapeHtml(li.identifier)}</span>
       <span class="title">${escapeHtml(li.title)}</span>
     </div>`;
@@ -2612,7 +2675,7 @@ function renderIssueDetail(i, timeline, extra = {}) {
     ${(i.labels && i.labels.length) || i.due_date ? `<div class="meta" style="margin:0 0 12px;">${renderLabelChips(i.labels)}${renderDueChip(i)}</div>` : ''}
     <div class="row" style="margin-bottom:12px;">
       <select id="status">
-        ${STATUSES.map(s => `<option value="${s}" ${s===i.status?'selected':''}>${prettyStatus(s)}</option>`).join('')}
+        ${statusesFor(i._workspace?.slug, i.status).map(s => `<option value="${escapeHtml(s)}" ${s===i.status?'selected':''}>${escapeHtml(prettyStatus(s))}</option>`).join('')}
       </select>
       <select id="priority">
         ${PRIORITIES.map(p => `<option value="${p}" ${p===(i.priority||'none')?'selected':''}>${prettyPriority(p)}</option>`).join('')}
@@ -2668,7 +2731,7 @@ function renderActivityEntry(a) {
       body = `created the issue`;
       break;
     case 'status_changed':
-      body = `changed status: <strong>${prettyStatus(d.from || '?')}</strong> → <strong>${prettyStatus(d.to || '?')}</strong>`;
+      body = `changed status: <strong>${escapeHtml(prettyStatus(d.from || '?'))}</strong> → <strong>${escapeHtml(prettyStatus(d.to || '?'))}</strong>`;
       break;
     case 'assignee_changed': {
       const from = d.from_id ? actorName(d.from_type, d.from_id) : 'unassigned';
@@ -3356,7 +3419,7 @@ async function viewNewIssue(app) {
     <div class="field"><label>Title</label><input id="title" placeholder="What needs to happen?" autofocus></div>
     <div class="field"><label>Description</label><textarea id="desc" rows="4" placeholder="Optional"></textarea></div>
     <div class="row">
-      <div class="field"><label>Status</label><select id="status">${STATUSES.map(s => `<option value="${s}" ${s==='todo'?'selected':''}>${prettyStatus(s)}</option>`).join('')}</select></div>
+      <div class="field"><label>Status</label><select id="status">${statusesFor(state.workspace?.slug).map(s => `<option value="${escapeHtml(s)}" ${s==='todo'?'selected':''}>${escapeHtml(prettyStatus(s))}</option>`).join('')}</select></div>
       <div class="field"><label>Priority</label><select id="priority">
         <option value="none" selected>None</option>
         <option value="low">Low</option>
